@@ -1,0 +1,26 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sports_management_backend
+    restart: always
+    environment:
+      - ENVIRONMENT=production
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set}
+      - CORS_ORIGINS=${CORS_ORIGINS:?CORS_ORIGINS must be set}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=10080
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sports_management_frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"

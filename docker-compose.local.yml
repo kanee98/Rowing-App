@@ -1,0 +1,32 @@
+services:
+  db:
+    image: mysql:8.4
+    container_name: sports_management_db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE must be set}
+      MYSQL_USER: ${MYSQL_USER:?MYSQL_USER must be set}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be set}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set}
+    ports:
+      - "${MYSQL_PORT:-3308}:3306"
+    volumes:
+      - sports_management_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  backend:
+    # This local environment runs under Docker Desktop on an x64 Windows host.
+    # An explicit target prevents BuildKit from selecting an incompatible
+    # architecture from a multi-platform Python base-image manifest.
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  sports_management_mysql_data:
