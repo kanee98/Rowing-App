@@ -98,7 +98,11 @@ class ApiService {
       throw new Error(errorMsg);
     }
 
-    return response.json();
+    try {
+      return await response.json();
+    } catch (e) {
+      throw new Error('Received an invalid response format from the server.');
+    }
   }
 
   // Auth & Club Registration
