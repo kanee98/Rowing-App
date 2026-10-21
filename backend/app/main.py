@@ -28,8 +28,11 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Startup: Create tables if not exist
     logger.info("Initializing database tables...")
-    Base.metadata.create_all(bind=engine)
-    run_additive_migrations()
+    try:
+        Base.metadata.create_all(bind=engine)
+        run_additive_migrations()
+    except Exception as e:
+        logger.error(f"Error initializing database tables on startup: {e}")
 
     yield
     logger.info("Shutting down application...")

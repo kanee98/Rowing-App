@@ -5,16 +5,39 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+import ssl
+import os
+from pathlib import Path
+
 # Normalize DATABASE_URL for SQLAlchemy if needed
 db_url = settings.DATABASE_URL
 if db_url.startswith("mysql://"):
     db_url = db_url.replace("mysql://", "mysql+pymysql://", 1)
 
+# Remove ?ssl-mode=... query parameters because PyMySQL expects SSL via connect_args
+if "?ssl-mode=" in db_url:
+    db_url = db_url.split("?ssl-mode=")[0]
+elif "&ssl-mode=" in db_url:
+    db_url = db_url.replace("&ssl-mode=REQUIRED", "")
+
+connect_args = {"connect_timeout": 10}
+
+# Automatically configure SSL if connecting to Aiven or other cloud MySQL instances
+if "aivencloud.com" in db_url or "ssl" in db_url.lower():
+    ca_path = os.environ.get("CA_CERT_PATH") or (Path(__file__).parent.parent.parent / "ca.pem")
+    if os.path.exists(ca_path):
+        connect_args["ssl"] = {"ca": str(ca_path)}
+    else:
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+        connect_args["ssl"] = ssl_ctx
+
 engine = create_engine(
     db_url,
     pool_pre_ping=True,
     pool_recycle=3600,
-    connect_args={"connect_timeout": 5},
+    connect_args=connect_args,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
