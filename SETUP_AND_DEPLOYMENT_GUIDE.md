@@ -158,9 +158,19 @@ git push origin main
 | :--- | :--- | :--- |
 | `DATABASE_URL` | `mysql+pymysql://avnadmin:pwd@host.aivencloud.com:port/defaultdb?ssl-mode=REQUIRED` | Your Aiven MySQL URI |
 | `SECRET_KEY` | *(Generate a 32+ character random string)* | JWT signature key |
-| `CORS_ORIGINS` | `https://your-frontend-domain.com,http://localhost:3000` | Allowed origins |
+| `CORS_ORIGINS` | `https://rowing.jet7ads.lk,http://localhost:3000` | Allowed frontend origins |
 | `ENVIRONMENT` | `production` | Production mode |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `10080` | Token expiration (7 days) |
+| `PUBLIC_APP_URL` | `https://rowing.jet7ads.lk` | Public web address for email links |
+| `SMTP_HOST` | `mail.jet7ads.lk` *(or your SMTP server)* | SMTP mail server hostname |
+| `SMTP_PORT` | `587` *(or `465` for SSL)* | SMTP port |
+| `SMTP_FROM` | `noreply@jet7ads.lk` | From address in sent emails |
+| `SMTP_USERNAME` | `noreply@jet7ads.lk` | SMTP login username |
+| `SMTP_PASSWORD` | *(Your mailbox password)* | SMTP login password |
+| `SMTP_STARTTLS` | `True` *(set `False` if using port 465)* | Enable STARTTLS |
+| `SMTP_SSL` | `False` *(set `True` if using port 465)* | Enable direct SSL |
+| `EMAIL_WORKER_ENABLED` | `True` | Background delivery queue runner |
+| `REMINDER_HOURS` | `24` | Hours before training to send email reminder |
 
 5. Click **Deploy**.
 6. When deployment finishes, Vercel will give you a production URL (e.g., `https://rowing-backend.vercel.app`).
