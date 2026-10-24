@@ -1,23 +1,22 @@
 services:
   db:
-    image: mysql:8.4
-    container_name: sports_management_db
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sports_management_mssql
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE must be set}
-      MYSQL_USER: ${MYSQL_USER:?MYSQL_USER must be set}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be set}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set}
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-RowingApp2026!}
+      MSSQL_PID: "Developer"
     ports:
-      - "${MYSQL_PORT:-3308}:3306"
+      - "${MSSQL_PORT:-1433}:1433"
     volumes:
-      - sports_management_mysql_data:/var/lib/mysql
+      - sports_management_mssql_data:/var/opt/mssql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -C -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -Q 'SELECT 1'"]
       interval: 5s
       timeout: 5s
       retries: 30
-      start_period: 20s
+      start_period: 15s
 
   backend:
     # This local environment runs under Docker Desktop on an x64 Windows host.
@@ -29,4 +28,5 @@ services:
         condition: service_healthy
 
 volumes:
-  sports_management_mysql_data:
+  sports_management_mssql_data:
+
