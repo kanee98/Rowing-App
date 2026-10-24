@@ -7,6 +7,7 @@ from app.core.security import get_password_hash
 from app.models.models import Club, User, UserRole
 from app.schemas.schemas import ClubOut, ClubSettingsUpdate, UserOut, UserCreate, UserUpdate
 from app.api.deps import get_current_user, require_roles
+from app.services.club_operations import audit, lock_club
 
 router = APIRouter(prefix="/clubs", tags=["clubs"])
 
@@ -37,7 +38,7 @@ def update_club_settings(
 
 @router.get("/members", response_model=List[UserOut])
 def get_club_members(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH, UserRole.TRAINER])),
     db: Session = Depends(get_db)
 ):
     members = db.query(User).filter(User.club_id == current_user.club_id).all()
@@ -83,13 +84,30 @@ def update_club_member(
     current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])),
     db: Session = Depends(get_db)
 ):
-    target = db.query(User).filter(User.id == member_id, User.club_id == current_user.club_id).first()
+    lock_club(db, current_user)
+    target = db.query(User).filter(User.id == member_id, User.club_id == current_user.club_id).populate_existing().first()
     if not target:
         raise HTTPException(status_code=404, detail="Member not found")
-    if current_user.role == UserRole.COACH and (target.role in [UserRole.ADMIN, UserRole.COACH] or payload.role in [UserRole.ADMIN, UserRole.COACH]):
-        raise HTTPException(status_code=403, detail="Only an administrator can manage administrator or coach accounts")
-    
     update_data = payload.model_dump(exclude_unset=True)
+    if current_user.role != UserRole.ADMIN:
+        if target.role != UserRole.ATHLETE or "role" in update_data or "is_active" in update_data:
+            raise HTTPException(status_code=403, detail="Only an administrator can change roles, account access, or staff accounts")
+    if any(update_data.get(field, "not_set") is None for field in ["role", "full_name", "email", "is_active"]):
+        raise HTTPException(status_code=422, detail="Name, email, role and account status cannot be empty")
+    if target.role == UserRole.ADMIN and (update_data.get("role", target.role) != UserRole.ADMIN or update_data.get("is_active") is False):
+        remaining_admins = db.query(User).filter(User.club_id == current_user.club_id, User.role == UserRole.ADMIN, User.is_active == True, User.id != target.id).count()
+        if remaining_admins == 0:
+            raise HTTPException(status_code=400, detail="Keep at least one active club administrator")
+    if "email" in update_data:
+        update_data["email"] = update_data["email"].strip().lower()
+        if db.query(User).filter(func.lower(User.email) == update_data["email"], User.id != target.id).first():
+            raise HTTPException(status_code=409, detail="An account with this email already exists")
+    if "email" in update_data and update_data["email"] != target.email:
+        raise HTTPException(400, detail="Members change their email through Account settings after verification")
+    if any(field in update_data and update_data[field] != getattr(target, field) for field in ("role", "is_active")):
+        target.token_version += 1
+    audit(db, current_user, "update_member", "user", target.id, {"fields": list(update_data)})
+
     for field, val in update_data.items():
         setattr(target, field, val)
     

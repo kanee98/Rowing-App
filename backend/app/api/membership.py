@@ -11,6 +11,8 @@ from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash
 from app.models.models import Club, ClubInvitation, ClubJoinRequest, Notification, User, UserRole
+from app.services.delivery import queue_email, app_link, email_configured
+from app.models.operations import EmailOutbox
 from app.schemas.schemas import (
     ClubInvitationAccept, ClubInvitationCreate, ClubInvitationCreated,
     ClubInvitationOut, ClubInvitationPreview, ClubJoinRequestCreate,
@@ -23,10 +25,14 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 def _find_invitation(db: Session, token: str) -> ClubInvitation:
-    invitation = db.query(ClubInvitation).filter(ClubInvitation.token_hash == _token_hash(token)).first()
+    invitation = db.query(ClubInvitation).filter(ClubInvitation.token_hash == _token_hash(token)).with_for_update().first()
     if not invitation or invitation.revoked_at or invitation.accepted_at or invitation.expires_at <= datetime.utcnow():
         raise HTTPException(status_code=400, detail="Invitation is invalid, expired, revoked, or already used")
     return invitation
+
+
+def _cancel_invitation_emails(db, invitation_id):
+    db.query(EmailOutbox).filter(EmailOutbox.dedupe_key.like(f'invitation:{invitation_id}:%'), EmailOutbox.status.in_(['pending', 'failed'])).update({'status': 'cancelled', 'body': ''}, synchronize_session=False)
 
 @router.get("/clubs/{club_code}", response_model=ClubPublicOut)
 def find_club(club_code: str, db: Session = Depends(get_db)):
@@ -119,6 +125,7 @@ def approve_join_request(
     request.reviewed_by_id = current_user.id
     request.reviewed_at = datetime.utcnow()
     request.review_notes = payload.notes
+    queue_email(db, request.club_id, request.email, "Your club membership was approved", f"You can now sign in to {current_user.club.name} using the password you chose.\n{app_link()}")
     db.commit()
     db.refresh(user)
     result = UserOut.model_validate(user)
@@ -143,6 +150,7 @@ def reject_join_request(
     request.reviewed_by_id = current_user.id
     request.reviewed_at = datetime.utcnow()
     request.review_notes = payload.notes
+    queue_email(db, request.club_id, request.email, "Your club membership request was reviewed", f"Your request to join {current_user.club.name} was not approved. Contact the club for details.")
     db.commit()
     db.refresh(request)
     return request
@@ -175,11 +183,30 @@ def create_invitation(
         expires_at=datetime.utcnow() + timedelta(days=payload.expires_days),
     )
     db.add(invitation)
+    db.flush()
+    queue_email(db, current_user.club_id, email, f"Invitation to {current_user.club.name}",
+        f"You have been invited as {payload.role.value}. Create your own account using this single-use link:\n{app_link(invite=token)}\nThis invitation expires in {payload.expires_days} days.", dedupe_key=f'invitation:{invitation.id}:{_token_hash(token)[:16]}')
     db.commit()
     db.refresh(invitation)
-    result = ClubInvitationCreated.model_validate(invitation)
-    result.token = token
-    return result
+    return ClubInvitationCreated(
+        **ClubInvitationOut.model_validate(invitation).model_dump(),
+        token=token,
+        email_queued=email_configured(),
+    )
+
+@router.post("/invitations/{invitation_id}/resend", response_model=ClubInvitationCreated)
+def resend_invitation(invitation_id: int, current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])), db: Session = Depends(get_db)):
+    invitation = db.query(ClubInvitation).filter(ClubInvitation.id == invitation_id, ClubInvitation.club_id == current_user.club_id).with_for_update().first()
+    if not invitation or (current_user.role == UserRole.COACH and invitation.role != UserRole.ATHLETE):
+        raise HTTPException(404, "Invitation not found")
+    if invitation.accepted_at or invitation.revoked_at:
+        raise HTTPException(409, "Create a new invitation for an accepted or revoked invitation")
+    token = secrets.token_urlsafe(32)
+    _cancel_invitation_emails(db, invitation.id)
+    invitation.token_hash, invitation.expires_at = _token_hash(token), datetime.utcnow() + timedelta(days=7)
+    queue_email(db, current_user.club_id, invitation.email, f"New invitation link for {current_user.club.name}", f"This replaces your previous invitation. Join as {invitation.role.value}:\n{app_link(invite=token)}\nThe link expires in seven days.", dedupe_key=f'invitation:{invitation.id}:{_token_hash(token)[:16]}')
+    db.commit(); db.refresh(invitation)
+    return ClubInvitationCreated(**ClubInvitationOut.model_validate(invitation).model_dump(), token=token, email_queued=email_configured())
 
 @router.get("/invitations", response_model=List[ClubInvitationOut])
 def list_invitations(
@@ -204,6 +231,7 @@ def revoke_invitation(
     if not invitation or (current_user.role == UserRole.COACH and invitation.role != UserRole.ATHLETE):
         raise HTTPException(status_code=404, detail="Invitation not found")
     invitation.revoked_at = datetime.utcnow()
+    _cancel_invitation_emails(db, invitation.id)
     db.commit()
     return {"status": "revoked", "id": invitation.id}
 
@@ -228,6 +256,7 @@ def accept_invitation(payload: ClubInvitationAccept, db: Session = Depends(get_d
     )
     db.add(user)
     invitation.accepted_at = datetime.utcnow()
+    _cancel_invitation_emails(db, invitation.id)
     db.commit()
     db.refresh(user)
     user_out = UserOut.model_validate(user)

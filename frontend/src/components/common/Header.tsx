@@ -6,12 +6,15 @@ import {
   ChevronDown, CheckCircle2, Sparkles, LogOut, KeyRound, Building2
 } from 'lucide-react';
 import { NotificationDropdown } from '../notifications/NotificationDropdown';
+import { useNavigation } from '../../context/NavigationContext';
 
 interface HeaderProps {
   onOpenAuth: (mode: 'login' | 'register') => void;
+  onJoinClub: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenAuth }) => {
+export const Header: React.FC<HeaderProps> = ({ onOpenAuth, onJoinClub }) => {
+  const { navigate } = useNavigation();
   const { user, logout } = useAuth();
   const { availableTours, startTour, isTourCompleted } = useTour();
   const [showTourMenu, setShowTourMenu] = useState(false);
@@ -56,7 +59,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenAuth }) => {
           {/* Right Actions: Tours Trigger + Notifications + User Menu */}
           <div className="flex items-center gap-2 sm:gap-3">
             {/* Real-time Notifications Dropdown (for logged-in users) */}
-            {user && <NotificationDropdown />}
+            {user && <NotificationDropdown onNavigateAction={(action) => { if (action) navigate(action); }} />}
 
             {/* Interactive Tour Engine Launcher */}
             <div className="relative">
@@ -161,6 +164,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenAuth }) => {
                     </div>
 
                     <div className="py-1 space-y-0.5">
+                    <button type="button" onClick={() => { navigate('operations'); setShowUserMenu(false); }} className="w-full px-4 py-2.5 text-left text-xs font-semibold text-slate-200 hover:bg-slate-800">Club operations & attendance</button>
+                    <button type="button" onClick={() => { navigate('account'); setShowUserMenu(false); }} className="w-full px-4 py-2.5 text-left text-xs font-semibold text-slate-200 hover:bg-slate-800">Account settings</button>
                       <button
                         onClick={() => onOpenAuth('register')}
                         className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-colors text-left"
@@ -191,7 +196,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenAuth }) => {
                   Log In
                 </button>
                 <button
-                  onClick={() => onOpenAuth('register')}
+                  onClick={onJoinClub}
                   className="px-3.5 py-1.5 text-xs font-semibold text-white bg-rowing-600 hover:bg-rowing-500 rounded-xl shadow-sm"
                 >
                   Join Club

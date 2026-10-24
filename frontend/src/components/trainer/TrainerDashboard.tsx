@@ -10,20 +10,25 @@ import confetti from 'canvas-confetti';
 import { ScheduleCalendar } from '../calendar/ScheduleCalendar';
 import { BoathouseWeatherWidget } from '../weather/BoathouseWeatherWidget';
 import { AvailabilityModal } from '../availability/AvailabilityModal';
+import { useDashboardTab, useNavigation, useNavigationScroll } from '../../context/NavigationContext';
 
 export const TrainerDashboard: React.FC = () => {
   const [pendingPerformances, setPendingPerformances] = useState<PerformanceEntry[]>([]);
   const [verifiedPerformances, setVerifiedPerformances] = useState<PerformanceEntry[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewTab, setViewTab] = useState<'queue' | 'calendar'>('queue');
+  const [page, navigate] = useDashboardTab(['verify', 'sessions', 'conditions'] as const, 'verify');
+  const { destination, navigate: openView } = useNavigation();
+  const viewTab = page === 'sessions' ? 'calendar' : 'queue';
+  const setViewTab = (tab: 'queue' | 'calendar') => navigate(tab === 'calendar' ? 'sessions' : 'verify');
+  useNavigationScroll(page === 'conditions' ? 'boathouse-conditions' : page === 'verify' && destination.target ? `performance-${destination.target}` : page === 'verify' ? 'tour-verification-queue' : 'trainer-navigation', !loading && (page !== 'verify' || !destination.target || [...pendingPerformances, ...verifiedPerformances].some((item) => item.id === destination.target)));
   const [selectedScheduleId, setSelectedScheduleId] = useState<number | null>(null);
   const [availabilityOpen, setAvailabilityOpen] = useState(false);
 
   // Verification Form State
   const [selectedPerfId, setSelectedPerfId] = useState<number | null>(null);
-  const [feedback, setFeedback] = useState<string>('Great leg drive rhythm. Keep the catch connection immediate.');
-  const [rating, setRating] = useState<number>(5);
+  const [feedback, setFeedback] = useState('');
+  const [rating, setRating] = useState<number | null>(null);
   const [verifying, setVerifying] = useState(false);
 
   const loadData = async () => {
@@ -47,14 +52,28 @@ export const TrainerDashboard: React.FC = () => {
   useEffect(() => {
     loadData();
   }, []);
+  useEffect(() => {
+    if (destination.view === 'sessions' && destination.target) setSelectedScheduleId(destination.target);
+    if (loading || destination.view !== 'verify' || !destination.target) return;
+    let active = true;
+    api.getPerformances({ performance_id: destination.target }).then((items) => {
+      if (!active || !items.length) return;
+      const entry = items[0];
+      if (!entry.is_verified) {
+        setPendingPerformances((old) => old.some((item) => item.id === entry.id) ? old : [entry, ...old]);
+        setSelectedPerfId(entry.id); setFeedback(''); setRating(null);
+      } else setVerifiedPerformances((old) => [entry, ...old.filter((item) => item.id !== entry.id)]);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [loading, destination.revision]);
 
   const handleVerify = async (perfId: number) => {
     setVerifying(true);
     try {
       await api.verifyPerformance(perfId, {
         is_verified: true,
-        trainer_feedback: feedback,
-        trainer_rating: rating,
+        trainer_feedback: feedback.trim() || undefined,
+        trainer_rating: rating ?? undefined,
       });
 
       try {
@@ -106,7 +125,7 @@ export const TrainerDashboard: React.FC = () => {
       <BoathouseWeatherWidget userRole="trainer" />
 
       {/* Navigation Sub-Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
+      <div id="trainer-navigation" className="scroll-mt-24 flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
         <button
           onClick={() => setViewTab('queue')}
           className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
@@ -134,11 +153,12 @@ export const TrainerDashboard: React.FC = () => {
         >
           <CalendarOff className="w-4 h-4" /> My Availability
         </button>
+        <button type="button" onClick={() => openView('operations')} className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-bold text-white">Operations & attendance</button>
       </div>
 
       {viewTab === 'calendar' ? (
         <ScheduleCalendar
-          schedules={schedules}
+          schedules={destination.view === 'sessions' && destination.target ? schedules.filter((schedule) => schedule.id === destination.target) : schedules}
           userRole="trainer"
         />
       ) : (
@@ -170,6 +190,7 @@ export const TrainerDashboard: React.FC = () => {
                 return (
                   <div
                     key={p.id}
+                    id={`performance-${p.id}`}
                     className="bg-slate-900/95 border border-slate-800 hover:border-emerald-500/50 rounded-2xl p-5 shadow-lg space-y-3.5 transition-all"
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -223,7 +244,7 @@ export const TrainerDashboard: React.FC = () => {
                               >
                                 <Star
                                   className={`w-4 h-4 ${
-                                    star <= rating
+                                    rating != null && star <= rating
                                       ? 'text-amber-400 fill-amber-400'
                                       : 'text-slate-600'
                                   }`}
@@ -265,8 +286,8 @@ export const TrainerDashboard: React.FC = () => {
                         id="tour-verify-action-btn"
                         onClick={() => {
                           setSelectedPerfId(p.id);
-                          setFeedback('Superb power consistency. Ready for seat race.');
-                          setRating(5);
+                          setFeedback('');
+                          setRating(null);
                         }}
                         className="w-full py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 text-xs font-bold border border-emerald-500/30 transition-all flex items-center justify-center gap-1.5"
                       >
@@ -337,6 +358,8 @@ export const TrainerDashboard: React.FC = () => {
                 <h4 className="text-sm font-bold text-white">
                   {sess.title}
                 </h4>
+                <p className="text-xs capitalize text-slate-400">{sess.status}{sess.change_reason ? ' · ' + sess.change_reason : ''}</p>
+                <button type="button" className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-bold text-white" onClick={() => openView(`operations/${sess.id}`)}>Open attendance register</button>
 
                 {sess.instructions && (
                   <p className="text-xs text-slate-300 bg-slate-950/50 p-2 rounded-lg">
@@ -355,7 +378,7 @@ export const TrainerDashboard: React.FC = () => {
 
             <div className="space-y-2">
               {verifiedPerformances.slice(0, 4).map((vp) => (
-                <div key={vp.id} className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-3 text-xs flex items-center justify-between">
+                <div key={vp.id} id={`performance-${vp.id}`} className="scroll-mt-24 bg-slate-900/60 border border-slate-800/80 rounded-xl p-3 text-xs flex items-center justify-between">
                   <div>
                     <span className="font-bold text-white">{vp.athlete_name}</span>
                     <span className="text-slate-400 block text-[10px]">
@@ -363,7 +386,7 @@ export const TrainerDashboard: React.FC = () => {
                     </span>
                   </div>
                   <div className="flex items-center gap-1 text-amber-400 font-mono font-bold">
-                    ⭐ {vp.trainer_rating || 5}/5
+                    {vp.trainer_rating != null ? `⭐ ${vp.trainer_rating}/5` : 'Not rated'}
                   </div>
                 </div>
               ))}

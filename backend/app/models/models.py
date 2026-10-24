@@ -133,6 +133,8 @@ class User(Base):
     side_preference = Column(Enum(BoatSidePreference), nullable=True)
     avatar_url = Column(String(512), nullable=True)
     is_active = Column(Boolean, default=True)
+    token_version = Column(Integer, default=0, nullable=False)
+    email_verified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     club = relationship("Club", back_populates="users")
@@ -325,6 +327,10 @@ class TrainingSession(Base):
     session_type = Column(String(64), default="indoor_erg") # water_rowing, indoor_erg, strength_gym, recovery
     location = Column(String(255), nullable=True)
     instructions = Column(Text, nullable=True)
+    status = Column(String(16), default="scheduled", nullable=False)
+    change_reason = Column(Text, nullable=True)
+    changed_at = Column(DateTime, nullable=True)
+    changed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     schedule = relationship("Schedule", back_populates="sessions")
@@ -430,13 +436,15 @@ class BoathouseCondition(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     club_id = Column(Integer, ForeignKey("clubs.id"), unique=True, nullable=False)
-    flag_status = Column(Enum(SafetyFlagStatus), default=SafetyFlagStatus.GREEN, nullable=False)
-    wind_speed_knots = Column(Float, default=8.0)
-    wind_direction = Column(String(64), default="NW Headwind 8 kts")
-    water_temp_c = Column(Float, default=14.5)
-    air_temp_c = Column(Float, default=17.0)
-    stream_flow_rate = Column(String(128), default="Moderate Stream (1.2 m/s)")
-    safety_notes = Column(Text, default="River clear. Normal traffic patterns apply. Stay on the starboard side.")
+    flag_status = Column(Enum(SafetyFlagStatus), nullable=False)
+    wind_speed_knots = Column(Float, nullable=True)
+    wind_direction = Column(String(64), nullable=True)
+    water_temp_c = Column(Float, nullable=True)
+    air_temp_c = Column(Float, nullable=True)
+    stream_flow_rate = Column(String(128), nullable=True)
+    safety_notes = Column(Text, nullable=True)
+    report_source = Column(String(32), default="manual", nullable=False)
+    valid_until = Column(DateTime, nullable=True)
     updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

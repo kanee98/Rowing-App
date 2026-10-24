@@ -45,6 +45,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const login = async (email: string, pass: string) => {
     authRevision.current += 1;
+    setLoading(true);
     try {
       const response = await api.login(email, pass);
       setUser(response.user);
@@ -52,11 +53,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       api.setToken(null);
       setUser(null);
       throw error;
+    } finally {
+      setLoading(false);
     }
   };
 
   const registerClub = async (data: any) => {
     authRevision.current += 1;
+    setLoading(true);
     try {
       const response = await api.registerClub(data);
       setUser(response.user);
@@ -64,18 +68,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       api.setToken(null);
       setUser(null);
       throw error;
+    } finally {
+      setLoading(false);
     }
   };
 
   const acceptInvitation = async (data: any) => {
     authRevision.current += 1;
+    setLoading(true);
     try {
       const response = await api.acceptClubInvitation(data);
       setUser(response.user);
     } catch (error) {
-      api.setToken(null);
-      setUser(null);
-      throw error;
+      api.setToken(null); setUser(null); throw error;
+    } finally {
+      setLoading(false);
     }
   };
 

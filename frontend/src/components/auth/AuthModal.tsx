@@ -8,6 +8,7 @@ interface AuthModalProps {
   onClose: () => void;
   initialMode?: 'login' | 'register';
   onJoinClub?: () => void;
+  onForgotPassword?: () => void;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -15,6 +16,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   initialMode = 'login',
   onJoinClub,
+  onForgotPassword,
 }) => {
   const { login, registerClub } = useAuth();
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
@@ -147,6 +149,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               />
             </div>
 
+            {onForgotPassword && <button type="button" onClick={onForgotPassword} className="text-xs font-semibold text-sky-300 hover:text-white">Forgot your password?</button>}
             <button
               type="submit"
               disabled={loading}

@@ -14,7 +14,10 @@ import { CoachGraphicalAnalytics } from './CoachGraphicalAnalytics';
 import { BoathouseWeatherWidget } from '../weather/BoathouseWeatherWidget';
 import { TaxonomyTreeManager } from '../taxonomy/TaxonomyTreeManager';
 import { EquipmentManager, ExerciseManager } from '../catalog/CatalogManagers';
+import { MembersManager } from '../admin/MembersManager';
 import { MembershipManager } from '../membership/MembershipManager';
+import { useDashboardTab, useNavigation, useNavigationScroll } from '../../context/NavigationContext';
+import { TrainerDashboard } from '../trainer/TrainerDashboard';
 
 const splitToSeconds = (value: string): number | null => {
   if (!value.trim()) return null;
@@ -35,7 +38,10 @@ export const CoachDashboard: React.FC = () => {
   const [adherence, setAdherence] = useState<Record<number, ScheduleAdherence>>({});
   const [loading, setLoading] = useState(true);
 
-  const [activeTab, setActiveTab] = useState<'analytics' | 'calendar' | 'schedules' | 'competitions' | 'taxonomy' | 'conditions' | 'equipment' | 'exercises' | 'membership'>('analytics');
+  const [activeTab, setActiveTab] = useDashboardTab(['analytics', 'calendar', 'schedules', 'competitions', 'taxonomy', 'conditions', 'equipment', 'exercises', 'membership', 'verify'] as const, 'analytics');
+  const { destination, navigate } = useNavigation();
+  const [analyticsDays, setAnalyticsDays] = useState(90);
+  useNavigationScroll(destination.target && activeTab === 'schedules' ? `schedule-${destination.target}` : activeTab === 'conditions' ? 'boathouse-conditions' : activeTab === 'verify' ? undefined : 'coach-navigation', !loading);
   const [benchmarkSplit, setBenchmarkSplit] = useState('');
   const [goldSplit, setGoldSplit] = useState('');
   const [isCreateScheduleOpen, setIsCreateScheduleOpen] = useState(false);
@@ -61,7 +67,7 @@ export const CoachDashboard: React.FC = () => {
     try {
       setLoading(true);
       const [sumData, scData, compData, eqData, exData, memberData, clubData] = await Promise.all([
-        api.getCoachSummary(),
+        api.getCoachSummary(analyticsDays),
         api.getSchedules(),
         api.getCompetitions(),
         api.getEquipment(),
@@ -91,7 +97,7 @@ export const CoachDashboard: React.FC = () => {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [analyticsDays]);
 
   const handleCreateCompetition = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -159,7 +165,7 @@ export const CoachDashboard: React.FC = () => {
               Squad Performance & Seat Selection Analytics
             </h2>
             <p className="text-sm text-slate-300 max-w-2xl mt-1">
-              Compare 2k/5k splits, power-to-weight ratios, and composite Readiness Scores to construct your fastest racing lineups.
+              Compare verified 2k/5k RowErg tests, review recorded power-to-weight ratios, and plan training with your squad.
             </p>
           </div>
 
@@ -185,7 +191,7 @@ export const CoachDashboard: React.FC = () => {
       </div>
 
       {/* Navigation Sub-Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
+      <div id="coach-navigation" className="scroll-mt-24 flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
         <button
           onClick={() => setActiveTab('analytics')}
           className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
@@ -258,14 +264,17 @@ export const CoachDashboard: React.FC = () => {
         <button onClick={() => setActiveTab('exercises')} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${activeTab === 'exercises' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}`}>
           <Dumbbell className="w-4 h-4" /> Exercise library
         </button>
+        <button type="button" onClick={() => navigate('operations')} className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-bold text-white">Operations & attendance</button>
         <button onClick={() => setActiveTab('membership')} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${activeTab === 'membership' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}`}>
           <Users className="w-4 h-4" /> Membership
         </button>
+        <button type="button" onClick={() => setActiveTab('verify')} className="flex items-center gap-2 whitespace-nowrap rounded-xl px-4 py-2 text-xs font-bold text-emerald-300 hover:bg-slate-800"><CheckCircle2 className="h-4 w-4" />Verify results</button>
       </div>
 
       {/* TAB 1: Athlete Comparison Analytics Matrix + Graphical Visualizers */}
       {activeTab === 'analytics' && (
         <div id="tour-coach-analytics-matrix" className="space-y-8">
+          <label className="block text-sm font-semibold text-slate-300">Benchmark period<select value={analyticsDays} onChange={(event) => setAnalyticsDays(Number(event.target.value))} className="ml-3 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"><option value={90}>Last 90 days</option><option value={180}>Last 180 days</option><option value={365}>Last year</option></select><span className="mt-2 block text-xs font-normal text-slate-400">{summary?.benchmark_definition}. Rankings use the fastest eligible 2k time; athletes without a result stay unranked.</span></label>
           {/* Graphical Analytics Component */}
           {summary?.athlete_rankings && summary.athlete_rankings.length > 0 && (
             <CoachGraphicalAnalytics rankings={summary.athlete_rankings} benchmark2kSplitSeconds={club?.benchmark_2k_split_seconds} gold2kSplitSeconds={club?.gold_2k_split_seconds} />
@@ -277,7 +286,7 @@ export const CoachDashboard: React.FC = () => {
                 Detailed Squad Leaderboard Table
               </h3>
               <p className="text-xs text-slate-400">
-                Sorted by the available verified 2k pace, watts/kg, and trainer-rating evidence. Missing data is never estimated.
+                Verified Concept2 RowErg tests within the selected period. Session counts are distinct scheduled sessions with submitted logs.
               </p>
             </div>
 
@@ -294,7 +303,7 @@ export const CoachDashboard: React.FC = () => {
                       <th className="py-4 px-3 text-rowing-400">Power/Wt (W/kg)</th>
                       <th className="py-4 px-3">5k Split</th>
                       <th className="py-4 px-3">Trainer Rating</th>
-                      <th className="py-4 px-4 text-right">Readiness Score</th>
+                      <th className="py-4 px-4 text-right">2k test date</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-medium">
@@ -309,14 +318,14 @@ export const CoachDashboard: React.FC = () => {
                             ath.rank === 2 ? 'bg-slate-300 text-slate-950' :
                             ath.rank === 3 ? 'bg-amber-700 text-white' : 'bg-slate-800 text-slate-400'
                           }`}>
-                            {ath.rank}
+                            {ath.rank ?? '—'}
                           </span>
                           <div>
                             <div className="font-bold text-white group-hover:text-amber-300 transition-colors">
                               {ath.athlete_name}
                             </div>
                             <div className="text-[10px] text-slate-500 font-mono">
-                              {ath.total_sessions_completed} logged pieces
+                              {ath.total_sessions_completed} sessions logged
                             </div>
                           </div>
                         </td>
@@ -351,19 +360,7 @@ export const CoachDashboard: React.FC = () => {
                           {ath.avg_verified_rating ? `⭐ ${ath.avg_verified_rating}/5` : '—'}
                         </td>
 
-                        <td className="py-3.5 px-4 text-right">
-                          <div className="inline-flex items-center gap-2">
-                            <div className="w-16 bg-slate-800 rounded-full h-2 overflow-hidden hidden sm:block">
-                              <div 
-                                className="bg-gradient-to-r from-amber-500 to-emerald-400 h-full rounded-full" 
-                                style={{ width: `${Math.min(100, ath.overall_readiness_score || 0)}%` }}
-                              />
-                            </div>
-                            <span className="font-mono font-extrabold text-sm text-emerald-400">
-                              {ath.overall_readiness_score != null ? `${ath.overall_readiness_score}%` : '—'}
-                            </span>
-                          </div>
-                        </td>
+                        <td className="py-3.5 px-4 text-right text-xs text-slate-400">{ath.best_2k_recorded_at ? new Date(ath.best_2k_recorded_at + 'Z').toLocaleDateString() : 'No eligible test'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -466,6 +463,7 @@ export const CoachDashboard: React.FC = () => {
             {schedules.map((sc) => (
               <div 
                 key={sc.id}
+                id={`schedule-${sc.id}`}
                 className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-3"
               >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -532,7 +530,7 @@ export const CoachDashboard: React.FC = () => {
                 {adherence[sc.id] && (
                   <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3 sm:grid-cols-[1fr_auto] sm:items-center">
                     <div><div className="flex items-center justify-between text-[10px] font-bold text-slate-400"><span>Workout completion</span><span>{adherence[sc.id].completed_logs}/{adherence[sc.id].expected_logs} logs · {adherence[sc.id].completion_percentage}%</span></div><div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-sky-500 to-emerald-500" style={{ width: `${Math.min(100, adherence[sc.id].completion_percentage)}%` }} /></div></div>
-                    <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-center"><div className="text-[9px] font-bold uppercase text-amber-400">Target achievement</div><div className="text-sm font-extrabold text-amber-200">{adherence[sc.id].target_achievement_percentage != null ? `${adherence[sc.id].target_achievement_percentage}%` : 'No results'}</div></div>
+                    <div title="Closeness to prescribed values using verified logs; exceeding a target does not increase this score." className="rounded-lg bg-amber-500/10 px-3 py-2 text-center"><div className="text-[9px] font-bold uppercase text-amber-400">Verified target match</div><div className="text-sm font-extrabold text-amber-200">{adherence[sc.id].target_achievement_percentage != null ? `${adherence[sc.id].target_achievement_percentage}%` : 'No verified results'}</div></div>
                   </div>
                 )}
 
@@ -558,7 +556,8 @@ export const CoachDashboard: React.FC = () => {
       {activeTab === 'conditions' && <div className="space-y-6"><BoathouseWeatherWidget userRole="coach" /><form onSubmit={saveBenchmarks} className="rounded-3xl border border-slate-800 bg-slate-900 p-5"><h3 className="font-extrabold text-white">Club 2k comparison standards</h3><p className="mt-1 text-xs text-slate-400">Optional reference lines for charts. These are club settings—not athlete results.</p><div className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto]"><label className="text-xs font-semibold text-slate-300">Benchmark split /500m<input value={benchmarkSplit} onChange={(e) => setBenchmarkSplit(e.target.value)} placeholder="M:SS.s" className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white" /></label><label className="text-xs font-semibold text-slate-300">Gold standard /500m<input value={goldSplit} onChange={(e) => setGoldSplit(e.target.value)} placeholder="M:SS.s" className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white" /></label><button className="self-end rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950">Save standards</button></div></form></div>}
       {activeTab === 'equipment' && <EquipmentManager items={equipmentList} onRefresh={loadData} />}
       {activeTab === 'exercises' && <ExerciseManager items={exercisesList} equipment={equipmentList} onRefresh={loadData} />}
-      {activeTab === 'membership' && <MembershipManager userRole="coach" onChanged={loadData} />}
+      {activeTab === 'membership' && <div className="space-y-6"><MembershipManager userRole="coach" onChanged={loadData} /><MembersManager onChanged={loadData} /></div>}
+      {activeTab === 'verify' && <TrainerDashboard />}
 
       {/* TAB 5: Periodization & Unlimited-Depth Taxonomy Manager */}
       {activeTab === 'taxonomy' && (

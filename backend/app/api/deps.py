@@ -38,6 +38,8 @@ def get_current_user(
         raise HTTPException(status_code=404, detail="User not found")
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
+    if payload.get("ver", 0) != user.token_version:
+        raise HTTPException(status_code=401, detail="Your account changed. Please sign in again.")
     return user
 
 def require_roles(allowed_roles: List[UserRole]):

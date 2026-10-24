@@ -8,6 +8,9 @@ import { CoachDashboard } from './components/coach/CoachDashboard';
 import { TrainerDashboard } from './components/trainer/TrainerDashboard';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { AuthModal } from './components/auth/AuthModal';
+import { AccountRecovery, AccountSettings } from './components/auth/AccountSettings';
+import { OperationsDashboard } from './components/operations/OperationsDashboard';
+import { useNavigation } from './context/NavigationContext';
 import { LogPerformanceModal } from './components/performance/LogPerformanceModal';
 import { MembershipAccessModal } from './components/membership/MembershipAccessModal';
 import { api } from './services/api';
@@ -16,6 +19,8 @@ import { Anchor, Building2, Users } from 'lucide-react';
 
 export const AppContent: React.FC = () => {
   const { user, loading } = useAuth();
+  const { destination } = useNavigation();
+  const [recovery, setRecovery] = useState<{ action?: string; token?: string } | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
   const [membershipOpen, setMembershipOpen] = useState(false);
@@ -29,7 +34,12 @@ export const AppContent: React.FC = () => {
   };
 
   useEffect(() => {
-    const token = new URLSearchParams(window.location.search).get('invite') || undefined;
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('invite') || undefined;
+    if (['password_reset', 'email_change'].includes(params.get('account_action') || '') && params.get('token')) {
+      setRecovery({ action: params.get('account_action')!, token: params.get('token')! });
+      window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+    }
     if (token) {
       setInviteToken(token);
       setMembershipOpen(true);
@@ -71,7 +81,7 @@ export const AppContent: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-20 md:pb-10 font-sans">
       {/* Top Header Navigation */}
-      <Header onOpenAuth={handleOpenAuth} />
+      <Header onOpenAuth={handleOpenAuth} onJoinClub={openMembership} />
 
       {/* Main Dynamic Role View */}
       <main className="flex-1">
@@ -119,7 +129,7 @@ export const AppContent: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-8 w-full max-w-2xl">
               {[
                 { icon: '🏋️', title: 'Athlete Tracking', desc: 'Log erg pieces, water sets, and gym blocks with split, watts, and stroke rate.' },
-                { icon: '📊', title: 'Coach Analytics', desc: 'Compare readiness scores, build race lineups, and set regatta targets.' },
+                { icon: '📊', title: 'Coach Analytics', desc: 'Compare verified rowing tests, explore lineups, and set regatta targets.' },
                 { icon: '✅', title: 'Trainer Verification', desc: 'Review submitted performances and give technical coaching feedback.' },
               ].map((f) => (
                 <div key={f.title} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 text-left space-y-2">
@@ -130,7 +140,7 @@ export const AppContent: React.FC = () => {
               ))}
             </div>
           </div>
-        ) : (
+        ) : destination.view === 'account' ? <AccountSettings /> : destination.view === 'operations' ? <OperationsDashboard /> : (
           <>
             {user.role === 'coach' && <CoachDashboard />}
             {user.role === 'trainer' && <TrainerDashboard />}
@@ -156,7 +166,10 @@ export const AppContent: React.FC = () => {
         onClose={() => setAuthModalOpen(false)}
         initialMode={authModalMode}
         onJoinClub={openMembership}
+        onForgotPassword={() => { setAuthModalOpen(false); setRecovery({}); }}
       />
+
+      {recovery && <AccountRecovery {...recovery} onClose={() => { setRecovery(null); if (!user) handleOpenAuth('login'); }} />}
 
       <MembershipAccessModal
         isOpen={membershipOpen}

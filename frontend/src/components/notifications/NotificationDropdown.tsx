@@ -113,7 +113,7 @@ export const NotificationDropdown: React.FC<NotificationDropdownProps> = ({ onNa
 
       {/* Dropdown Panel */}
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-slate-900 border border-slate-800 rounded-3xl p-3 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-150">
+        <div className="absolute right-0 mt-2 w-[min(24rem,calc(100vw-2rem))] bg-slate-900 border border-slate-800 rounded-3xl p-3 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-150">
           {/* Header */}
           <div className="flex items-center justify-between pb-2.5 px-2 border-b border-slate-800">
             <div className="flex items-center gap-2">
@@ -147,9 +147,13 @@ export const NotificationDropdown: React.FC<NotificationDropdownProps> = ({ onNa
               notifications.map((n) => (
                 <div
                   key={n.id}
+                  role="link"
+                  tabIndex={0}
+                  onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); event.currentTarget.click(); } }}
                   onClick={() => {
                     if (!n.is_read) handleMarkRead(n.id, { stopPropagation: () => {} } as any);
                     if (n.link_action && onNavigateAction) onNavigateAction(n.link_action);
+                    setIsOpen(false);
                   }}
                   className={`p-2.5 rounded-2xl flex items-start gap-2.5 transition-colors cursor-pointer ${
                     n.is_read

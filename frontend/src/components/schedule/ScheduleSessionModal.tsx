@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { CalendarPlus, X } from 'lucide-react';
 import { Exercise, Schedule, TrainingSession } from '../../types';
 import { api } from '../../services/api';
+import { localInput } from '../../lib/dateTime';
+import { useNavigation } from '../../context/NavigationContext';
 import { createEmptySessionDraft, expandRecurringSession, SessionDraft, SessionEditorForm, sessionDraftToPayload } from './SessionEditorForm';
 
 interface ScheduleSessionModalProps {
@@ -14,11 +16,7 @@ interface ScheduleSessionModalProps {
   onSuccess: () => void;
 }
 
-const toLocalDateTime = (value: string) => {
-  const date = new Date(value);
-  const offset = date.getTimezoneOffset() * 60000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
-};
+const toLocalDateTime = localInput;
 
 const withoutWeekdayPrefix = (title: string) => title.replace(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday):\s*/i, '');
 
@@ -75,6 +73,7 @@ export const ScheduleSessionModal: React.FC<ScheduleSessionModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const { navigate } = useNavigation();
   const initialDraft = useMemo(() => {
     if (session) {
       const draft = draftFromSession(session);
@@ -136,7 +135,8 @@ export const ScheduleSessionModal: React.FC<ScheduleSessionModalProps> = ({
           <button type="button" onClick={onClose} disabled={saving} aria-label="Close session editor" className="rounded-xl p-2 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-50"><X className="h-5 w-5" /></button>
         </header>
         <main className="min-h-0 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6 sm:py-6">
-          <SessionEditorForm value={draft} exercises={exercises} trainers={schedule.assigned_trainers || []} minDate={schedule.start_date.slice(0, 10)} maxDate={schedule.end_date.slice(0, 10)} allowRecurrence={!session || duplicate} onChange={setDraft} onCancel={onClose} onSave={save} saveLabel={duplicate ? 'Create duplicate' : session ? 'Save changes' : 'Add to schedule'} saving={saving} />
+          {session && !duplicate && <div className="mb-4 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-200">To change the time or duration, reschedule with a reason so participants are notified and boat bookings stay in sync.<button type="button" className="mt-2 block rounded-lg bg-sky-600 px-3 py-2 font-bold text-white" onClick={() => { onClose(); navigate(`operations/${session.id}`); }}>Open rescheduling & attendance</button></div>}
+          <SessionEditorForm value={draft} exercises={exercises} trainers={schedule.assigned_trainers || []} minDate={schedule.start_date.slice(0, 10)} maxDate={schedule.end_date.slice(0, 10)} allowRecurrence={!session || duplicate} timingLocked={Boolean(session && !duplicate)} onChange={(next) => setDraft(session && !duplicate ? { ...next, session_date: initialDraft.session_date, duration_minutes: initialDraft.duration_minutes } : next)} onCancel={onClose} onSave={save} saveLabel={duplicate ? 'Create duplicate' : session ? 'Save changes' : 'Add to schedule'} saving={saving} />
         </main>
       </div>
     </div>,

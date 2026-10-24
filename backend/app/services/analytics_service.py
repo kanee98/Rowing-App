@@ -1,168 +1,135 @@
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+import math
+
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
-from app.models.models import User, UserRole, PerformanceEntry, Exercise, Schedule, Competition, TrainingSession
+from app.models.models import User, UserRole, PerformanceEntry, Exercise, Schedule, Competition
 from app.schemas.schemas import CoachAnalyticsSummary, AthleteRankingItem, ExerciseBenchmarkItem
+from app.services.benchmark_service import is_erg_benchmark, matches_protocol
+
 
 def format_split(seconds: float | None) -> str | None:
     if seconds is None or seconds <= 0:
         return None
-    mins = int(seconds // 60)
-    secs = seconds % 60
-    return f"{mins}:{secs:04.1f}"
+    tenths = round(seconds * 10)
+    return f"{tenths // 600}:{(tenths % 600) / 10:04.1f}"
+
 
 def format_duration(seconds: float | None) -> str | None:
-    if seconds is None or seconds <= 0:
-        return None
-    mins = int(seconds // 60)
-    secs = seconds % 60
-    return f"{mins}:{secs:04.1f}"
+    return format_split(seconds)
 
-def calculate_coach_analytics(db: Session, club_id: int) -> CoachAnalyticsSummary:
-    # 1. Total counts
-    athletes = db.query(User).filter(User.club_id == club_id, User.role == UserRole.ATHLETE).all()
-    trainers_count = db.query(User).filter(User.club_id == club_id, User.role == UserRole.TRAINER).count()
-    total_entries = db.query(PerformanceEntry).join(User, PerformanceEntry.athlete_id == User.id)\
-        .filter(User.club_id == club_id).count()
-    verified_entries = db.query(PerformanceEntry).join(User, PerformanceEntry.athlete_id == User.id)\
-        .filter(User.club_id == club_id, PerformanceEntry.is_verified == True).count()
-    
-    verified_pct = (verified_entries / total_entries * 100.0) if total_entries > 0 else 0.0
-    active_schedules_count = db.query(Schedule).filter(Schedule.club_id == club_id, Schedule.is_active == True).count()
-    competitions_count = db.query(Competition).filter(Competition.club_id == club_id).count()
 
-    # 2. Athlete Rankings Calculation
-    # Find 2K and 5K exercises
-    ex_2k = db.query(Exercise).filter(Exercise.club_id == club_id, Exercise.default_distance_m == 2000).first()
-    ex_5k = db.query(Exercise).filter(Exercise.club_id == club_id, Exercise.default_distance_m == 5000).first()
-
+def build_athlete_rankings(athletes, entries, exercise_map):
+    by_athlete = defaultdict(list)
+    for entry in entries:
+        if entry.exercise_id in exercise_map:
+            by_athlete[entry.athlete_id].append(entry)
     ranking_items = []
-    for a in athletes:
-        # Fetch best 2k
-        best_2k_entry = None
-        if ex_2k:
-            best_2k_entry = db.query(PerformanceEntry)\
-                .filter(PerformanceEntry.athlete_id == a.id, PerformanceEntry.exercise_id == ex_2k.id)\
-                .order_by(PerformanceEntry.avg_split_seconds.asc()).first()
-        
-        # Fallback if no specific 2k exercise, check any 2000m logged
-        if not best_2k_entry:
-            best_2k_entry = db.query(PerformanceEntry)\
-                .filter(PerformanceEntry.athlete_id == a.id, PerformanceEntry.actual_distance_m == 2000)\
-                .order_by(PerformanceEntry.avg_split_seconds.asc()).first()
-
-        # Fetch best 5k
-        best_5k_entry = None
-        if ex_5k:
-            best_5k_entry = db.query(PerformanceEntry)\
-                .filter(PerformanceEntry.athlete_id == a.id, PerformanceEntry.exercise_id == ex_5k.id)\
-                .order_by(PerformanceEntry.avg_split_seconds.asc()).first()
-        if not best_5k_entry:
-            best_5k_entry = db.query(PerformanceEntry)\
-                .filter(PerformanceEntry.athlete_id == a.id, PerformanceEntry.actual_distance_m == 5000)\
-                .order_by(PerformanceEntry.avg_split_seconds.asc()).first()
-
-        # Total sessions completed
-        sessions_count = db.query(PerformanceEntry).filter(PerformanceEntry.athlete_id == a.id).count()
-
-        # Average trainer rating
-        avg_rating = db.query(func.avg(PerformanceEntry.trainer_rating))\
-            .filter(PerformanceEntry.athlete_id == a.id, PerformanceEntry.trainer_rating != None).scalar()
-
-        # Watts/kg calculation
-        w_kg = None
-        if best_2k_entry and best_2k_entry.avg_watts and a.weight_kg and a.weight_kg > 0:
-            w_kg = round(best_2k_entry.avg_watts / a.weight_kg, 2)
-
-        # Composite Readiness Score (0 - 100)
-        # 1. 2k Split component (1:30 is 100%, 2:10 is 40%)
-        # 2. Watts/kg component (>5.0 w/kg is top tier)
-        # 3. Volume and trainer rating
-        weighted_scores = []
-        if best_2k_entry and best_2k_entry.avg_split_seconds:
-            # 90s (1:30) -> 100, 120s (2:00) -> 60
-            raw_split_score = max(30.0, min(100.0, 100 - (best_2k_entry.avg_split_seconds - 90) * 1.5))
-            weighted_scores.append((raw_split_score, 60.0))
-        if w_kg:
-            weighted_scores.append((min(100.0, w_kg * 20.0), 25.0))
-        if avg_rating:
-            weighted_scores.append(((float(avg_rating) / 5.0) * 100.0, 15.0))
-        readiness = (
-            sum(score * weight for score, weight in weighted_scores) / sum(weight for _, weight in weighted_scores)
-            if weighted_scores else None
-        )
-
+    for athlete in athletes:
+        athlete_entries = by_athlete[athlete.id]
+        verified = [entry for entry in athlete_entries if entry.is_verified]
+        best = {}
+        for distance in (2000, 5000):
+            candidates = [entry for entry in verified if is_erg_benchmark(entry, exercise_map[entry.exercise_id], distance)]
+            best[distance] = min(candidates, key=lambda entry: entry.actual_duration_sec) if candidates else None
+        two, five = best[2000], best[5000]
+        ratings = [entry.trainer_rating for entry in verified if entry.trainer_rating is not None]
+        # Distinct scheduled sessions only. Standalone pieces remain workout logs.
+        sessions = {entry.session_id for entry in athlete_entries if entry.session_id is not None}
         ranking_items.append(AthleteRankingItem(
-            athlete_id=a.id,
-            athlete_name=a.full_name,
-            weight_kg=a.weight_kg,
-            side_preference=a.side_preference.value if a.side_preference else None,
-            total_sessions_completed=sessions_count,
-            best_2k_split=format_split(best_2k_entry.avg_split_seconds) if best_2k_entry else None,
-            best_2k_time_sec=best_2k_entry.actual_duration_sec if best_2k_entry else None,
-            best_2k_watts=best_2k_entry.avg_watts if best_2k_entry else None,
-            watts_per_kg_2k=w_kg,
-            best_5k_split=format_split(best_5k_entry.avg_split_seconds) if best_5k_entry else None,
-            best_5k_time_sec=best_5k_entry.actual_duration_sec if best_5k_entry else None,
-            avg_verified_rating=round(float(avg_rating), 1) if avg_rating else None,
-            overall_readiness_score=round(readiness, 1) if readiness is not None else None,
-            rank=1
+            athlete_id=athlete.id, athlete_name=athlete.full_name,
+            weight_kg=athlete.weight_kg,
+            side_preference=athlete.side_preference.value if athlete.side_preference else None,
+            total_sessions_completed=len(sessions),
+            best_2k_split=format_split(two.actual_duration_sec / 4) if two else None,
+            best_2k_time_sec=two.actual_duration_sec if two else None,
+            best_2k_watts=two.avg_watts if two else None,
+            watts_per_kg_2k=round(two.avg_watts / athlete.weight_kg, 2) if two and two.avg_watts and athlete.weight_kg and athlete.weight_kg > 0 else None,
+            best_5k_split=format_split(five.actual_duration_sec / 10) if five else None,
+            best_5k_time_sec=five.actual_duration_sec if five else None,
+            avg_verified_rating=round(sum(ratings) / len(ratings), 1) if ratings else None,
+            overall_readiness_score=None,
+            best_2k_recorded_at=two.recorded_date if two else None,
+            best_5k_recorded_at=five.recorded_date if five else None,
+        ))
+    ranking_items.sort(key=lambda item: (item.best_2k_time_sec is None, item.best_2k_time_sec or float("inf"), item.athlete_name.casefold()))
+    previous_time, previous_rank = None, None
+    for index, item in enumerate(ranking_items):
+        if item.best_2k_time_sec is not None:
+            item.rank = previous_rank if item.best_2k_time_sec == previous_time else index + 1
+            previous_time, previous_rank = item.best_2k_time_sec, item.rank
+
+    return ranking_items
+
+
+def calculate_coach_analytics(db: Session, club_id: int, window_days: int = 90) -> CoachAnalyticsSummary:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    since = now - timedelta(days=window_days)
+    athletes = db.query(User).filter(User.club_id == club_id, User.role == UserRole.ATHLETE, User.is_active == True).all()
+    athlete_map = {athlete.id: athlete for athlete in athletes}
+    exercises = db.query(Exercise).filter(Exercise.club_id == club_id).all()
+    exercise_map = {exercise.id: exercise for exercise in exercises}
+    entries = db.query(PerformanceEntry).join(User, PerformanceEntry.athlete_id == User.id).filter(
+        User.club_id == club_id, User.role == UserRole.ATHLETE, User.is_active == True,
+        PerformanceEntry.recorded_date >= since, PerformanceEntry.recorded_date <= now,
+    ).all()
+    entries = [entry for entry in entries if entry.exercise_id in exercise_map]
+    by_athlete = defaultdict(list)
+    by_exercise = defaultdict(list)
+    for entry in entries:
+        by_athlete[entry.athlete_id].append(entry)
+        if entry.is_verified:
+            by_exercise[entry.exercise_id].append(entry)
+
+    ranking_items = build_athlete_rankings(athletes, entries, exercise_map)
+
+    benchmarks = []
+    # Heart rate, stroke rate and RPE are descriptive measurements, not rankings.
+    metric_specs = {
+        "split_500m": ("avg_split_seconds", format_split, False),
+        "time_seconds": ("actual_duration_sec", format_duration, False),
+        "watts": ("avg_watts", lambda value: f"{value:.0f} W", True),
+        "distance_meters": ("actual_distance_m", lambda value: f"{value:.0f} m", True),
+        "reps_weight": ("actual_weight_kg", lambda value: f"{value:.1f} kg", True),
+        "stroke_rate": ("avg_stroke_rate", lambda value: f"{value:.1f} spm", None),
+        "heart_rate": ("avg_heart_rate", lambda value: f"{value:.0f} bpm", None),
+        "rpe": ("perceived_exertion_rpe", lambda value: f"{value:.1f}/10 RPE", None),
+    }
+    for exercise in exercises:
+        if exercise.primary_metric not in metric_specs:
+            continue
+        field, formatter, higher_is_better = metric_specs[exercise.primary_metric]
+        measured = [(entry, getattr(entry, field)) for entry in by_exercise[exercise.id] if getattr(entry, field) is not None and math.isfinite(getattr(entry, field)) and getattr(entry, field) > 0]
+        if not measured:
+            continue
+        # Publish leaderboard values only for a known, identical protocol.
+        comparable = [(entry, value) for entry, value in measured if matches_protocol(entry, exercise)]
+        if exercise.primary_metric == "reps_weight":
+            rep_counts = {entry.actual_reps for entry, _ in measured}
+            comparable = measured if len(rep_counts) == 1 and None not in rep_counts else []
+        # Fixed time is required to rank distances; fixed distance to rank times.
+        if exercise.primary_metric == "distance_meters" and not exercise.default_duration_sec:
+            comparable = []
+        if exercise.primary_metric in ("time_seconds", "split_500m") and not exercise.default_distance_m:
+            comparable = []
+        best_entry, best_value = (None, None)
+        if comparable and higher_is_better is not None:
+            best_entry, best_value = sorted(comparable, key=lambda item: item[1], reverse=higher_is_better)[0]
+        average_entries = comparable if comparable else measured
+        benchmarks.append(ExerciseBenchmarkItem(
+            exercise_id=exercise.id, exercise_name=exercise.name, total_entries=len(average_entries),
+            top_performer_name=athlete_map[best_entry.athlete_id].full_name if best_entry else None,
+            top_performer_value=formatter(best_value) if best_entry else None,
+            club_avg_value=formatter(sum(value for _, value in average_entries) / len(average_entries)),
         ))
 
-    # Sort athletes by overall readiness / best 2k
-    ranking_items.sort(
-        key=lambda x: (x.overall_readiness_score is not None, x.overall_readiness_score or 0, -(x.best_2k_time_sec or 9999)),
-        reverse=True,
-    )
-    for idx, item in enumerate(ranking_items):
-        item.rank = idx + 1
-
-    # 3. Exercise benchmarks
-    exercises = db.query(Exercise).filter(Exercise.club_id == club_id).all()
-    benchmarks = []
-    for ex in exercises:
-        entries = db.query(PerformanceEntry).filter(PerformanceEntry.exercise_id == ex.id).all()
-        if entries:
-            metric_values = []
-            higher_is_better = False
-            if ex.primary_metric == "reps_weight":
-                metric_values = [(entry, entry.actual_weight_kg) for entry in entries if entry.actual_weight_kg]
-                higher_is_better = True
-                formatter = lambda value: f"{value:.1f} kg"
-            elif ex.primary_metric == "watts":
-                metric_values = [(entry, entry.avg_watts) for entry in entries if entry.avg_watts]
-                higher_is_better = True
-                formatter = lambda value: f"{value:.0f} W"
-            elif ex.primary_metric == "distance_meters":
-                metric_values = [(entry, entry.actual_distance_m) for entry in entries if entry.actual_distance_m]
-                higher_is_better = True
-                formatter = lambda value: f"{value:.0f} m"
-            elif ex.primary_metric == "time_seconds":
-                metric_values = [(entry, entry.actual_duration_sec) for entry in entries if entry.actual_duration_sec]
-                formatter = format_duration
-            else:
-                metric_values = [(entry, entry.avg_split_seconds) for entry in entries if entry.avg_split_seconds]
-                formatter = format_split
-            if not metric_values:
-                continue
-            best_entry, best_value = sorted(metric_values, key=lambda item: item[1], reverse=higher_is_better)[0]
-            average_value = sum(value for _, value in metric_values) / len(metric_values)
-            top_athlete = db.query(User).filter(User.id == best_entry.athlete_id).first()
-            benchmarks.append(ExerciseBenchmarkItem(
-                exercise_id=ex.id,
-                exercise_name=ex.name,
-                total_entries=len(entries),
-                top_performer_name=top_athlete.full_name if top_athlete else "N/A",
-                top_performer_value=formatter(best_value),
-                club_avg_value=formatter(average_value),
-            ))
-
     return CoachAnalyticsSummary(
+        window_days=window_days, as_of=now,
         total_athletes=len(athletes),
-        total_trainers=trainers_count,
-        total_workouts_logged=total_entries,
-        verified_percentage=round(verified_pct, 1),
-        active_schedules_count=active_schedules_count,
-        target_competitions_count=competitions_count,
-        athlete_rankings=ranking_items,
-        exercise_benchmarks=benchmarks
+        total_trainers=db.query(User).filter(User.club_id == club_id, User.role == UserRole.TRAINER, User.is_active == True).count(),
+        total_workouts_logged=len(entries),
+        verified_percentage=round(sum(entry.is_verified for entry in entries) / len(entries) * 100, 1) if entries else 0,
+        active_schedules_count=db.query(Schedule).filter(Schedule.club_id == club_id, Schedule.is_active == True).count(),
+        target_competitions_count=db.query(Competition).filter(Competition.club_id == club_id).count(),
+        athlete_rankings=ranking_items, exercise_benchmarks=benchmarks,
     )

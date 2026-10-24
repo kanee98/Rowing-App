@@ -44,7 +44,7 @@ DEFAULT_TOURS: Dict[str, TourDefinition] = {
             TourStep(
                 target="#tour-coach-analytics-matrix",
                 title="Athlete Performance Rankings",
-                content="Compare your athletes side-by-side on 2k/5k splits, watts/kg, and composite Readiness Scores to make boat seat selection easy.",
+                content="Compare verified 2k/5k Concept2 RowErg tests within the selected period. Athletes without an eligible test remain unranked; these results do not predict on-water boat speed.",
                 placement="bottom"
             ),
             TourStep(

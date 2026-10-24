@@ -1,6 +1,6 @@
 from typing import List, Optional, Any, Dict, Literal
-from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from datetime import datetime, timezone
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator, model_validator
 from app.models.models import (
     UserRole, BoatSidePreference, EquipmentCategory, ExerciseCategory, SchedulePhase,
     SafetyFlagStatus, NotificationType, TaxonomyNodeStatus, AvailabilityStatus
@@ -136,6 +136,7 @@ class ClubInvitationOut(BaseModel):
 
 class ClubInvitationCreated(ClubInvitationOut):
     token: str
+    email_queued: bool = False
 
 class ClubInvitationPreview(BaseModel):
     club_name: str
@@ -287,10 +288,22 @@ class TrainingSessionCreate(BaseModel):
     instructions: Optional[str] = None
     exercises: Optional[List[SessionExerciseCreate]] = []
 
+    @field_validator('session_date')
+    @classmethod
+    def normalize_session_time(cls, value):
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+
+    @model_validator(mode='after')
+    def derive_weekday(self):
+        self.day_of_week = self.session_date.weekday()
+        return self
+
 class TrainingSessionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    status: str = "scheduled"
+    change_reason: Optional[str] = None
     schedule_id: int
     trainer_id: Optional[int] = None
     trainer_name: Optional[str] = None
@@ -504,7 +517,9 @@ class AthleteRankingItem(BaseModel):
     best_5k_time_sec: Optional[float] = None
     avg_verified_rating: Optional[float] = None
     overall_readiness_score: Optional[float] = None
-    rank: int
+    rank: Optional[int] = None
+    best_2k_recorded_at: Optional[datetime] = None
+    best_5k_recorded_at: Optional[datetime] = None
 
 class ExerciseBenchmarkItem(BaseModel):
     exercise_id: int
@@ -515,6 +530,9 @@ class ExerciseBenchmarkItem(BaseModel):
     club_avg_value: Optional[str] = None
 
 class CoachAnalyticsSummary(BaseModel):
+    window_days: int = 90
+    as_of: Optional[datetime] = None
+    benchmark_definition: str = "Verified single-distance Concept2 RowErg tests in the selected period"
     total_athletes: int
     total_trainers: int
     total_workouts_logged: int
@@ -552,19 +570,10 @@ class NotificationBroadcastRequest(BaseModel):
 class BoathouseConditionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: Optional[int] = None
     club_id: int
-    flag_status: SafetyFlagStatus
-    wind_speed_knots: float
-    wind_direction: str
-    water_temp_c: float
-    air_temp_c: float
-    stream_flow_rate: str
-    safety_notes: str
-    updated_by_id: Optional[int] = None
-    updated_at: datetime
-
-class BoathouseConditionUpdate(BaseModel):
+    report_status: Literal["not_reported", "current", "outdated"] = "not_reported"
+    report_source: Optional[str] = None
     flag_status: Optional[SafetyFlagStatus] = None
     wind_speed_knots: Optional[float] = None
     wind_direction: Optional[str] = None
@@ -572,6 +581,19 @@ class BoathouseConditionUpdate(BaseModel):
     air_temp_c: Optional[float] = None
     stream_flow_rate: Optional[str] = None
     safety_notes: Optional[str] = None
+    updated_by_id: Optional[int] = None
+    updated_at: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+
+class BoathouseConditionUpdate(BaseModel):
+    flag_status: SafetyFlagStatus
+    wind_speed_knots: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
+    wind_direction: Optional[str] = Field(None, max_length=64)
+    water_temp_c: Optional[float] = Field(None, allow_inf_nan=False)
+    air_temp_c: Optional[float] = Field(None, allow_inf_nan=False)
+    stream_flow_rate: Optional[str] = Field(None, max_length=128)
+    safety_notes: Optional[str] = Field(None, max_length=4000)
+    valid_for_hours: int = Field(6, ge=1, le=24)
     broadcast_alert: Optional[bool] = False
 
 # Taxonomy Node Schemas

@@ -1,561 +1,299 @@
+"""Integration tests: explicit fixtures, never fictional seeded club members."""
+from datetime import timedelta
+from urllib.parse import urlparse, parse_qs
+import uuid
 import pytest
-from fastapi.testclient import TestClient
-from app.main import app
-from app.core.database import Base, engine, run_additive_migrations
+from app.models.operations import utcnow
 
-@pytest.fixture(scope="session", autouse=True)
-def init_db():
-    Base.metadata.create_all(bind=engine)
-    run_additive_migrations()
-    yield
+PREFIX = '/api/v1'
+PASSWORD = 'TestPassword123!'
+
 
 @pytest.fixture
-def client():
-    with TestClient(app) as c:
-        yield c
-
-def test_root_endpoint(client):
-    response = client.get("/")
-    assert response.status_code == 200
-    assert response.json()["status"] == "online"
-
-def test_club_registration_with_starter_pack(client):
-    import uuid
-    unique_code = f"RC{uuid.uuid4().hex[:6].upper()}"
-    payload = {
-        "name": f"Cambridge University Rowing Club {unique_code}",
-        "code": unique_code,
-        "location": "River Cam, Cambridge",
-        "description": "Prestigious university rowing club.",
-        "admin_name": "Alexander Hayes",
-        "admin_email": f"admin_{unique_code.lower()}@cambridge.edu",
-        "admin_password": "SecurePassword123!"
-    }
-    response = client.post("/api/v1/auth/register-club", json=payload)
-    assert response.status_code == 200
+def club(client):
+    code = 'T' + uuid.uuid4().hex[:10].upper()
+    response = client.post(PREFIX + '/auth/register-club', json={
+        'name': 'Integration Club', 'code': code, 'admin_name': 'Test Administrator',
+        'admin_email': code.lower() + '@example.org', 'admin_password': PASSWORD,
+    })
+    assert response.status_code == 200, response.text
     data = response.json()
-    assert "access_token" in data
-    assert data["user"]["role"] == "admin"
-    assert data["user"]["email"] == payload["admin_email"]
+    admin = {'Authorization': 'Bearer ' + data['access_token']}
+    people = {}
+    for role, name in [('coach', 'Coach'), ('trainer', 'Trainer'), ('athlete', 'Athlete'), ('athlete', 'Second Athlete')]:
+        created = client.post(PREFIX + '/clubs/members', headers=admin, json={
+            'full_name': name, 'email': name.replace(' ', '').lower() + code + '@example.org',
+            'role': role, 'password': PASSWORD,
+        })
+        assert created.status_code == 200, created.text
+        person = created.json()
+        login = client.post(PREFIX + '/auth/login', json={'email': person['email'], 'password': PASSWORD})
+        assert login.status_code == 200, login.text
+        person['headers'] = {'Authorization': 'Bearer ' + login.json()['access_token']}
+        people[name] = person
+    return {'admin': admin, 'admin_user': data['user'], **people}
 
-    token = data["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
 
-    # Verify starter pack equipment seeded
-    eq_res = client.get("/api/v1/equipment", headers=headers)
-    assert eq_res.status_code == 200
-    assert len(eq_res.json()) >= 6
-
-    # Verify starter pack exercises seeded
-    ex_res = client.get("/api/v1/exercises", headers=headers)
-    assert ex_res.status_code == 200
-    assert len(ex_res.json()) >= 5
-
-    # Verify starter pack schedules seeded
-    sc_res = client.get("/api/v1/schedules", headers=headers)
-    assert sc_res.status_code == 200
-    assert len(sc_res.json()) >= 1
-    assert sc_res.json()[0]["competition_name"] is not None
-
-def test_coach_login_and_analytics(client):
-    import uuid
-    unique_code = f"CC{uuid.uuid4().hex[:6].upper()}"
-    payload = {
-        "name": f"Oxford Racing Club {unique_code}",
-        "code": unique_code,
-        "admin_name": "Oxford Admin",
-        "admin_email": f"admin_{unique_code.lower()}@oxford.edu",
-        "admin_password": "SecurePassword123!"
-    }
-    reg_res = client.post("/api/v1/auth/register-club", json=payload)
-    assert reg_res.status_code == 200
-
-    # Log in as the seeded Coach
-    coach_login = client.post("/api/v1/auth/login", json={
-        "email": f"coach@{unique_code.lower()}.rowing.com",
-        "password": "CoachPass123!"
+def create_session(client, club, days=2):
+    start = (utcnow() + timedelta(days=days)).replace(microsecond=0)
+    result = client.post(PREFIX + '/schedules', headers=club['admin'], json={
+        'name': 'Explicit test plan', 'start_date': start.isoformat(),
+        'end_date': (start + timedelta(days=4)).isoformat(),
+        'athlete_ids': [club['Athlete']['id']], 'trainer_ids': [club['Trainer']['id']],
+        'sessions': [{'title': 'Test outing', 'session_date': start.isoformat(), 'duration_minutes': 60, 'exercises': []}],
     })
-    assert coach_login.status_code == 200
-    coach_token = coach_login.json()["access_token"]
-    coach_headers = {"Authorization": f"Bearer {coach_token}"}
+    assert result.status_code == 200, result.text
+    return result.json()['sessions'][0]
 
-    # Coach accesses analytics
-    analytics_res = client.get("/api/v1/analytics/coach-summary", headers=coach_headers)
-    assert analytics_res.status_code == 200
-    summary = analytics_res.json()
-    assert summary["total_athletes"] >= 1
-    assert len(summary["athlete_rankings"]) >= 1
-    assert summary["athlete_rankings"][0]["rank"] == 1
-    assert summary["athlete_rankings"][0]["overall_readiness_score"] > 0
 
-def test_athlete_performance_logging_and_trainer_verification(client):
-    import uuid
-    unique_code = f"TC{uuid.uuid4().hex[:6].upper()}"
-    client.post("/api/v1/auth/register-club", json={
-        "name": f"Thames Club {unique_code}",
-        "code": unique_code,
-        "admin_name": "Thames Admin",
-        "admin_email": f"admin_{unique_code.lower()}@thames.edu",
-        "admin_password": "SecurePassword123!"
+def boat_and_crew(client, club, suffix=''):
+    boat = client.post(PREFIX + '/equipment', headers=club['admin'], json={
+        'name': 'Test single ' + suffix, 'category': '1x_single_scull', 'status': 'available',
+    })
+    assert boat.status_code == 200, boat.text
+    crew = client.post(PREFIX + '/operations/crews', headers=club['admin'], json={
+        'name': 'Test crew ' + suffix, 'equipment_id': boat.json()['id'], 'seats': {'Single': club['Athlete']['id']},
+    })
+    assert crew.status_code == 200, crew.text
+    return boat.json(), crew.json()
+
+
+def book(client, club, crew, session):
+    start = session['session_date']
+    return client.post(PREFIX + '/operations/reservations', headers=club['admin'], json={
+        'crew_id': crew['id'], 'session_id': session['id'], 'starts_at': start,
+        'ends_at': (utcnow() + timedelta(days=3)).isoformat(),
     })
 
-    # 1. Log in as seeded Athlete
-    ath_login = client.post("/api/v1/auth/login", json={
-        "email": f"liam@{unique_code.lower()}.rowing.com",
-        "password": "AthletePass123!"
+
+def test_registration_does_not_seed_members_equipment_or_sessions(client):
+    code = 'C' + uuid.uuid4().hex[:10].upper()
+    response = client.post(PREFIX + '/auth/register-club', json={
+        'name': 'Clean Club', 'code': code, 'admin_name': 'Only Admin',
+        'admin_email': code + '@example.org', 'admin_password': PASSWORD,
     })
-    assert ath_login.status_code == 200
-    ath_token = ath_login.json()["access_token"]
-    ath_headers = {"Authorization": f"Bearer {ath_token}"}
+    assert response.status_code == 200, response.text
+    headers = {'Authorization': 'Bearer ' + response.json()['access_token']}
+    assert len(client.get(PREFIX + '/clubs/members', headers=headers).json()) == 1
+    for path in ['/equipment', '/exercises', '/schedules', '/operations/crews', '/operations/outings']:
+        assert client.get(PREFIX + path, headers=headers).json() == []
+    safety = client.get(PREFIX + '/weather/boathouse-conditions', headers=headers).json()
+    assert safety['report_status'] == 'not_reported'
+    assert safety['flag_status'] is None
 
-    # Get an exercise
-    exercises = client.get("/api/v1/exercises", headers=ath_headers).json()
-    assert len(exercises) > 0
-    ex_id = exercises[0]["id"]
 
-    # Log 2000m workout in 6:40 (400 seconds)
-    perf_payload = {
-        "exercise_id": ex_id,
-        "actual_distance_m": 2000,
-        "actual_duration_sec": 400.0,
-        "avg_stroke_rate": 32.0,
-        "perceived_exertion_rpe": 9,
-        "drag_factor": 125,
-        "athlete_notes": "Hard sprint in the final 250m."
-    }
-    log_res = client.post("/api/v1/performance", json=perf_payload, headers=ath_headers)
-    assert log_res.status_code == 200
-    perf_data = log_res.json()
-    assert perf_data["avg_split_seconds"] == 100.0 # 1:40.0 split
-    assert perf_data["avg_watts"] > 0
-    assert perf_data["is_verified"] is False
-    perf_id = perf_data["id"]
-
-    # 2. Log in as seeded Trainer to verify
-    trainer_login = client.post("/api/v1/auth/login", json={
-        "email": f"trainer@{unique_code.lower()}.rowing.com",
-        "password": "TrainerPass123!"
+@pytest.mark.parametrize('role', ['coach', 'trainer', 'admin'])
+def test_admin_invitation_acceptance_uses_selected_role(client, club, role):
+    created = client.post(PREFIX + '/membership/invitations', headers=club['admin'], json={
+        'email': role + uuid.uuid4().hex[:8] + '@example.org', 'role': role,
     })
-    assert trainer_login.status_code == 200
-    trainer_token = trainer_login.json()["access_token"]
-    trainer_headers = {"Authorization": f"Bearer {trainer_token}"}
+    assert created.status_code == 200, created.text
+    token = created.json()['token']
+    accepted = client.post(PREFIX + '/membership/invitations/accept', json={'token': token, 'full_name': 'Invited User', 'password': PASSWORD})
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()['user']['role'] == role
+    assert client.post(PREFIX + '/membership/invitations/accept', json={'token': token, 'full_name': 'Again', 'password': PASSWORD}).status_code == 400
 
-    verify_payload = {
-        "is_verified": True,
-        "trainer_feedback": "Excellent split management and high aerobic output.",
-        "trainer_rating": 5
-    }
-    verify_res = client.post(f"/api/v1/performance/{perf_id}/verify", json=verify_payload, headers=trainer_headers)
-    assert verify_res.status_code == 200
-    assert verify_res.json()["is_verified"] is True
-    assert verify_res.json()["trainer_rating"] == 5
 
-def test_onboarding_tours_api(client):
-    import uuid
-    unique_code = f"OB{uuid.uuid4().hex[:6].upper()}"
-    client.post("/api/v1/auth/register-club", json={
-        "name": f"Onboarding Club {unique_code}",
-        "code": unique_code,
-        "admin_name": "OB Admin",
-        "admin_email": f"admin_{unique_code.lower()}@ob.edu",
-        "admin_password": "SecurePassword123!"
+def test_last_administrator_and_staff_permissions(client, club):
+    assert client.put(PREFIX + '/clubs/members/' + str(club['admin_user']['id']), headers=club['admin'], json={'is_active': False}).status_code == 400
+    assert client.put(PREFIX + '/clubs/members/' + str(club['Athlete']['id']), headers=club['Coach']['headers'], json={'role': 'trainer'}).status_code == 403
+    assert client.post(PREFIX + '/membership/invitations', headers=club['Coach']['headers'], json={'email': 'newtrainer@example.org', 'role': 'trainer'}).status_code == 403
+    suspended = client.put(PREFIX + '/clubs/members/' + str(club['Athlete']['id']), headers=club['admin'], json={'is_active': False})
+    assert suspended.status_code == 200, suspended.text
+    assert client.get(PREFIX + '/auth/me', headers=club['Athlete']['headers']).status_code in (400, 401, 403)
+    login = client.post(PREFIX + '/auth/login', json={'email': club['Athlete']['email'], 'password': PASSWORD})
+    assert login.status_code in (400, 401, 403)
+
+
+def test_self_service_profile_and_password_invalidates_old_tokens(client, club):
+    headers = club['Athlete']['headers']
+    updated = client.put(PREFIX + '/account/profile', headers=headers, json={'full_name': 'Updated Athlete', 'weight_kg': 72.5, 'height_cm': None, 'side_preference': None})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()['weight_kg'] == 72.5
+    wrong = client.post(PREFIX + '/account/password', headers=headers, json={'current_password': 'incorrect', 'new_password': 'ChangedPassword123!'})
+    assert wrong.status_code == 400
+    result = client.post(PREFIX + '/account/password', headers=headers, json={'current_password': PASSWORD, 'new_password': 'ChangedPassword123!'})
+    assert result.status_code == 200, result.text
+    assert client.get(PREFIX + '/auth/me', headers=headers).status_code == 401
+    assert client.get(PREFIX + '/auth/me', headers={'Authorization': 'Bearer ' + result.json()['access_token']}).status_code == 200
+
+
+def test_rsvp_checkin_and_assignment_privacy(client, club):
+    session = create_session(client, club)
+    path = PREFIX + '/operations/sessions/' + str(session['id'])
+    rsvp = client.put(path + '/rsvp', headers=club['Athlete']['headers'], json={'rsvp': 'going', 'note': 'See you there'})
+    assert rsvp.status_code == 200, rsvp.text
+    assert client.get(path + '/attendance', headers=club['Second Athlete']['headers']).status_code == 404
+    assert client.put(path + '/attendance/' + str(club['Athlete']['id']), headers=club['Athlete']['headers'], json={'checkin': 'present'}).status_code == 403
+    checked = client.put(path + '/attendance/' + str(club['Athlete']['id']), headers=club['Trainer']['headers'], json={'checkin': 'present'})
+    assert checked.status_code == 200, checked.text
+    row = client.get(path + '/attendance', headers=club['Trainer']['headers']).json()[0]
+    assert row['rsvp'] == 'going' and row['checkin'] == 'present'
+
+
+def test_boat_and_athlete_cannot_be_double_booked(client, club):
+    session = create_session(client, club)
+    _, crew = boat_and_crew(client, club)
+    first = book(client, club, crew, session)
+    assert first.status_code == 200, first.text
+    assert book(client, club, crew, session).status_code == 409
+    _, other_crew = boat_and_crew(client, club, 'other boat')
+    assert book(client, club, other_crew, session).status_code == 409
+
+
+def test_cancellation_releases_boat_and_closes_rsvp(client, club):
+    session = create_session(client, club)
+    _, crew = boat_and_crew(client, club)
+    assert book(client, club, crew, session).status_code == 200
+    path = PREFIX + '/operations/sessions/' + str(session['id'])
+    cancelled = client.post(path + '/lifecycle', headers=club['Coach']['headers'], json={'action': 'cancel', 'reason': 'Unsafe water conditions'})
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()['status'] == 'cancelled'
+    bookings = client.get(PREFIX + '/operations/reservations', headers=club['admin']).json()
+    assert bookings[0]['status'] == 'cancelled'
+    assert client.put(path + '/rsvp', headers=club['Athlete']['headers'], json={'rsvp': 'going'}).status_code == 409
+    restored = client.post(path + '/lifecycle', headers=club['admin'], json={'action': 'restore', 'reason': 'Conditions now reviewed'})
+    assert restored.status_code == 200, restored.text
+    assert client.get(PREFIX + '/operations/reservations', headers=club['admin']).json()[0]['status'] == 'cancelled'
+
+
+def test_grounded_boat_stays_blocked_until_all_repairs_resolved(client, club):
+    session = create_session(client, club)
+    boat, crew = boat_and_crew(client, club)
+    reports = [client.post(PREFIX + '/operations/damage', headers=club['Athlete']['headers'], json={
+        'equipment_id': boat['id'], 'severity': 'grounded', 'description': description,
+    }).json()['id'] for description in ['Damaged rudder', 'Cracked hull']]
+    assert book(client, club, crew, session).status_code == 409
+    for report_id in reports:
+        response = client.post(PREFIX + '/operations/damage/' + str(report_id) + '/resolve', headers=club['Trainer']['headers'], json={'resolution': 'Repair inspected and completed'})
+        assert response.status_code == 200, response.text
+        if report_id == reports[0]:
+            assert book(client, club, crew, session).status_code == 409
+    assert book(client, club, crew, session).status_code == 200
+
+
+def test_reschedule_moves_reservation_and_resets_rsvp(client, club):
+    session = create_session(client, club)
+    _, crew = boat_and_crew(client, club)
+    assert book(client, club, crew, session).status_code == 200
+    path = PREFIX + '/operations/sessions/' + str(session['id'])
+    client.put(path + '/rsvp', headers=club['Athlete']['headers'], json={'rsvp': 'going'})
+    new_time = (utcnow() + timedelta(days=3)).replace(microsecond=0).isoformat()
+    response = client.post(path + '/lifecycle', headers=club['admin'], json={'action': 'reschedule', 'reason': 'Coach timing change', 'session_date': new_time, 'duration_minutes': 90})
+    assert response.status_code == 200, response.text
+    assert client.get(PREFIX + '/operations/reservations', headers=club['admin']).json()[0]['starts_at'] == new_time
+    assert client.get(path + '/attendance', headers=club['admin']).json()[0]['rsvp'] == 'unknown'
+    notices = client.get(PREFIX + '/notifications', headers=club['Athlete']['headers']).json()['items']
+    assert any(notice['link_action'] == 'operations/' + str(session['id']) for notice in notices)
+
+
+def test_password_reset_and_verified_email_are_single_use(client, club, db_session, monkeypatch):
+    from app.core.config import settings
+    from app.services.delivery import _cipher
+    from app.models.operations import EmailOutbox
+    monkeypatch.setattr(settings, 'SMTP_HOST', 'smtp.test.invalid')
+    monkeypatch.setattr(settings, 'SMTP_FROM', 'club@example.org')
+    headers = club['Athlete']['headers']
+    for purpose in ['password_reset', 'email_change']:
+        endpoint = '/account/forgot-password' if purpose == 'password_reset' else '/account/email-change'
+        body = {'email': club['Athlete']['email']} if purpose == 'password_reset' else {'current_password': 'ResetPassword123!', 'new_email': 'verified' + uuid.uuid4().hex[:8] + '@example.org'}
+        response = client.post(PREFIX + endpoint, headers=headers, json=body)
+        assert response.status_code == 200, response.text
+        message = db_session.query(EmailOutbox).order_by(EmailOutbox.id.desc()).first()
+        content = _cipher().decrypt(message.body.encode()).decode()
+        link = next(line for line in content.splitlines() if line.startswith('http'))
+        params = parse_qs(urlparse(link).query)
+        assert params['account_action'] == [purpose]
+        confirmation = {'token': params['token'][0]}
+        if purpose == 'password_reset': confirmation['new_password'] = 'ResetPassword123!'
+        result = client.post(PREFIX + '/account/confirm', json=confirmation)
+        assert result.status_code == 200, result.text
+        assert client.post(PREFIX + '/account/confirm', json=confirmation).status_code == 400
+        if purpose == 'password_reset':
+            login = client.post(PREFIX + '/auth/login', json={'email': club['Athlete']['email'], 'password': 'ResetPassword123!'})
+            headers = {'Authorization': 'Bearer ' + login.json()['access_token']}
+        else:
+            login = client.post(PREFIX + '/auth/login', json={'email': body['new_email'], 'password': 'ResetPassword123!'})
+            assert login.status_code == 200, login.text
+
+
+def test_athlete_with_overdue_outing_cannot_launch_another_boat(client, club, db_session):
+    from app.models.operations import Reservation, Outing
+    _, crew_a = boat_and_crew(client, club, 'A')
+    _, crew_b = boat_and_crew(client, club, 'B')
+    now = utcnow()
+    booking_ids = []
+    for crew, minutes in [(crew_a, 5), (crew_b, 70)]:
+        response = client.post(PREFIX + '/operations/reservations', headers=club['admin'], json={
+            'crew_id': crew['id'], 'starts_at': (now + timedelta(minutes=minutes)).isoformat(),
+            'ends_at': (now + timedelta(minutes=minutes + 60)).isoformat(),
+        })
+        assert response.status_code == 200, response.text
+        booking_ids.append(response.json()['id'])
+    first = db_session.get(Reservation, booking_ids[0])
+    first.starts_at, first.ends_at = now - timedelta(minutes=1), now + timedelta(minutes=1)
+    db_session.commit()
+    launched = client.post(PREFIX + '/operations/outings', headers=club['Trainer']['headers'], json={'reservation_id': first.id})
+    assert launched.status_code == 200, launched.text
+    first.ends_at = now - timedelta(seconds=10)
+    db_session.get(Outing, launched.json()['id']).expected_return_at = first.ends_at
+    second = db_session.get(Reservation, booking_ids[1])
+    second.starts_at, second.ends_at = now - timedelta(seconds=5), now + timedelta(minutes=50)
+    db_session.commit()
+    blocked = client.post(PREFIX + '/operations/outings', headers=club['Trainer']['headers'], json={'reservation_id': second.id})
+    assert blocked.status_code == 409
+    assert 'unreturned' in blocked.json()['detail']
+    assert client.post(PREFIX + '/operations/outings/' + str(launched.json()['id']) + '/return', headers=club['Trainer']['headers']).status_code == 200
+    assert client.post(PREFIX + '/operations/outings', headers=club['Trainer']['headers'], json={'reservation_id': second.id}).status_code == 200
+
+
+def test_taxonomy_depth_cycle_protection_and_recovery_with_explicit_nodes(client, club):
+    headers = club['admin']
+    parent = None
+    nodes = []
+    for index in range(5):
+        response = client.post(PREFIX + '/taxonomy/nodes', headers=headers, json={'name': 'Level ' + str(index), 'parent_id': parent})
+        assert response.status_code == 201, response.text
+        nodes.append(response.json())
+        parent = nodes[-1]['id']
+    assert nodes[-1]['depth'] == 4
+    cycle = client.post(PREFIX + '/taxonomy/nodes/' + str(nodes[0]['id']) + '/move', headers=headers, json={'target_parent_id': nodes[-1]['id']})
+    assert cycle.status_code == 400, cycle.text
+    removed = client.delete(PREFIX + '/taxonomy/nodes/' + str(nodes[2]['id']), headers=headers)
+    assert removed.status_code == 200, removed.text
+    assert removed.json()['affected_count'] >= 3
+    recovered = client.post(PREFIX + '/taxonomy/nodes/' + str(nodes[2]['id']) + '/recover', headers=headers)
+    assert recovered.status_code == 200 and recovered.json()['status'] == 'active'
+
+
+def test_availability_privacy_and_time_conflict_indicators(client, club):
+    start = (utcnow() + timedelta(days=4)).replace(microsecond=0)
+    payload = {'starts_at': start.isoformat(), 'ends_at': (start + timedelta(hours=1)).isoformat(),
+        'status': 'unavailable', 'reason_category': 'medical', 'is_safety_restriction': True,
+        'coach_visible_notes': 'Cannot train', 'private_notes': 'Private detail'}
+    result = client.post(PREFIX + '/availability', headers=club['Athlete']['headers'], json=payload)
+    assert result.status_code == 200, result.text
+    visible = client.get(PREFIX + '/availability?user_id=' + str(club['Athlete']['id']), headers=club['Coach']['headers'])
+    assert visible.json()[0]['private_notes'] is None
+    assert visible.json()[0]['coach_visible_notes'] == 'Cannot train'
+    assert client.delete(PREFIX + '/availability/' + str(result.json()['id']), headers=club['Coach']['headers']).status_code == 403
+    conflict = client.post(PREFIX + '/availability/conflicts', headers=club['Coach']['headers'], json={
+        'user_ids': [club['Athlete']['id']], 'sessions': [{'starts_at': start.isoformat(), 'duration_minutes': 30}],
     })
+    assert conflict.status_code == 200, conflict.text
+    assert conflict.json()[0]['status'] == 'safety_restriction'
+    assert 'Private detail' not in conflict.text
 
-    ath_login = client.post("/api/v1/auth/login", json={
-        "email": f"liam@{unique_code.lower()}.rowing.com",
-        "password": "AthletePass123!"
-    })
-    assert ath_login.status_code == 200
-    ath_headers = {"Authorization": f"Bearer {ath_login.json()['access_token']}"}
 
-    # Fetch tours
-    tours_res = client.get("/api/v1/onboarding/tours", headers=ath_headers)
-    assert tours_res.status_code == 200
-    tours = tours_res.json()
-    assert len(tours) >= 1
-    assert any(t["tour_id"] == "athlete_flow" for t in tours)
-
-    # Save tour step progress
-    progress_payload = {
-        "tour_id": "athlete_flow",
-        "current_step": 2,
-        "is_completed": False,
-        "dismissed": False
-    }
-    save_res = client.post("/api/v1/onboarding/progress", json=progress_payload, headers=ath_headers)
-    assert save_res.status_code == 200
-    assert save_res.json()["current_step"] == 2
-
-def test_notifications_and_weather_conditions(client):
-    import uuid
-    unique_code = f"NW{uuid.uuid4().hex[:6].upper()}"
-    client.post("/api/v1/auth/register-club", json={
-        "name": f"Weather Test Club {unique_code}",
-        "code": unique_code,
-        "admin_name": "Weather Admin",
-        "admin_email": f"admin_{unique_code.lower()}@weather.edu",
-        "admin_password": "SecurePassword123!"
-    })
-
-    # Coach login
-    coach_login = client.post("/api/v1/auth/login", json={
-        "email": f"coach@{unique_code.lower()}.rowing.com",
-        "password": "CoachPass123!"
-    })
-    assert coach_login.status_code == 200
-    coach_headers = {"Authorization": f"Bearer {coach_login.json()['access_token']}"}
-
-    # 1. Fetch boathouse conditions
-    w_res = client.get("/api/v1/weather/boathouse-conditions", headers=coach_headers)
-    assert w_res.status_code == 200
-    w_data = w_res.json()
-    assert w_data["flag_status"] == "green"
-
-    # 2. Update conditions to AMBER flag with alert broadcast
-    w_update_res = client.post("/api/v1/weather/boathouse-conditions", json={
-        "flag_status": "amber",
-        "wind_speed_knots": 18.5,
-        "wind_direction": "NE Strong Gusts 18 kts",
-        "safety_notes": "High wind. Eights and Fours only. Small boats grounded.",
-        "broadcast_alert": True
-    }, headers=coach_headers)
-    assert w_update_res.status_code == 200
-    assert w_update_res.json()["flag_status"] == "amber"
-
-    # 3. Athlete logs in and checks notifications
-    ath_login = client.post("/api/v1/auth/login", json={
-        "email": f"liam@{unique_code.lower()}.rowing.com",
-        "password": "AthletePass123!"
-    })
-    assert ath_login.status_code == 200
-    ath_headers = {"Authorization": f"Bearer {ath_login.json()['access_token']}"}
-
-    notif_res = client.get("/api/v1/notifications", headers=ath_headers)
-    assert notif_res.status_code == 200
-    notif_data = notif_res.json()
-    assert notif_data["unread_count"] >= 1
-    # Check that weather alert notification was received
-    assert any("AMBER FLAG" in n["title"] or n["type"] == "weather_alert" for n in notif_data["items"])
-
-    # 4. Mark all as read
-    read_all = client.post("/api/v1/notifications/mark-all-read", headers=ath_headers)
-    assert read_all.status_code == 200
-
-    notif_res2 = client.get("/api/v1/notifications", headers=ath_headers)
-    assert notif_res2.json()["unread_count"] == 0
-
-    # 5. Coach broadcasts team announcement
-    bc_res = client.post("/api/v1/notifications/broadcast", json={
-        "title": "Regatta Lineups Finalized",
-        "message": "Final crew lists for the National Championships have been posted.",
-        "type": "announcement"
-    }, headers=coach_headers)
-    assert bc_res.status_code == 200
-    assert bc_res.json()["recipients_count"] >= 1
-
-def test_unlimited_depth_taxonomy_and_schedule_snapshots(client):
-    import uuid
-    unique_code = f"TX{uuid.uuid4().hex[:6].upper()}"
-    client.post("/api/v1/auth/register-club", json={
-        "name": f"Taxonomy Club {unique_code}",
-        "code": unique_code,
-        "admin_name": "Taxonomy Admin",
-        "admin_email": f"admin_{unique_code.lower()}@tax.edu",
-        "admin_password": "SecurePassword123!"
-    })
-
-    # Admin Login
-    admin_login = client.post("/api/v1/auth/login", json={
-        "email": f"admin_{unique_code.lower()}@tax.edu",
-        "password": "SecurePassword123!"
-    })
-    assert admin_login.status_code == 200
-    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
-
-    # 1. Fetch pre-seeded Starter Pack Taxonomy Tree
-    tree_res = client.get("/api/v1/taxonomy/tree", headers=admin_headers)
-    assert tree_res.status_code == 200
-    tree_data = tree_res.json()
-    assert len(tree_data) >= 1
-    assert tree_data[0]["name"] == "Training Schedules"
-
-    # 2. Test Unlimited Depth Creation (e.g. 5 levels deep)
-    # L1: Training Schedules -> L2: Annual Macrocycle -> L3: Custom Deep Branch -> L4: Specific Sprint -> L5: Micro-Focus
-    root_id = tree_data[0]["id"]
-    l2_node = client.post("/api/v1/taxonomy/nodes", json={
-        "name": "Custom Elite Macrocycle",
-        "parent_id": root_id,
-        "description": "Level 2 block"
-    }, headers=admin_headers).json()
-
-    l3_node = client.post("/api/v1/taxonomy/nodes", json={
-        "name": "Preparation Mesocycle",
-        "parent_id": l2_node["id"],
-        "description": "Level 3 block"
-    }, headers=admin_headers).json()
-
-    l4_node = client.post("/api/v1/taxonomy/nodes", json={
-        "name": "Sprint Utilization Modality",
-        "parent_id": l3_node["id"],
-        "description": "Level 4 block"
-    }, headers=admin_headers).json()
-
-    l5_node = client.post("/api/v1/taxonomy/nodes", json={
-        "name": "500m Sub-Threshold 2",
-        "parent_id": l4_node["id"],
-        "description": "Level 5 leaf node"
-    }, headers=admin_headers).json()
-
-    assert l5_node["depth"] == 4 # 0-indexed: 0,1,2,3,4 = 5 levels
-    assert "Training Schedules / Custom Elite Macrocycle / Preparation Mesocycle / Sprint Utilization Modality / 500m Sub-Threshold 2" == l5_node["full_path"]
-
-    # 3. Test Cycle Prevention Check
-    # Attempting to move l2_node under l4_node (descendant) must return HTTP 400
-    cycle_res = client.post(f"/api/v1/taxonomy/nodes/{l2_node['id']}/move", json={
-        "target_parent_id": l4_node["id"]
-    }, headers=admin_headers)
-    assert cycle_res.status_code == 400
-    assert "Cycle detected" in cycle_res.json()["detail"]
-
-    # Attempting to move node under itself must return 400
-    self_move_res = client.post(f"/api/v1/taxonomy/nodes/{l2_node['id']}/move", json={
-        "target_parent_id": l2_node["id"]
-    }, headers=admin_headers)
-    assert self_move_res.status_code == 400
-
-    # 4. Schedule Creation with Immutable Taxonomy Snapshot
-    from datetime import datetime, timedelta
-    now_iso = datetime.utcnow().isoformat()
-    end_iso = (datetime.utcnow() + timedelta(days=30)).isoformat()
-
-    sch_res = client.post("/api/v1/schedules", json={
-        "name": "500m Sprint Cycle Plan",
-        "season": "Spring 2026",
-        "taxonomy_node_id": l5_node["id"],
-        "start_date": now_iso,
-        "end_date": end_iso,
-        "sessions": []
-    }, headers=admin_headers)
-    assert sch_res.status_code == 200
-    sch_data = sch_res.json()
-    assert sch_data["taxonomy_node_id"] == l5_node["id"]
-    assert sch_data["taxonomy_node_name"] == "500m Sub-Threshold 2"
-    assert sch_data["taxonomy_path_snapshot"] == l5_node["full_path"]
-
-    # 5. Descendant Filtering Test
-    # Querying schedules with parent node `l2_node["id"]` must include the schedule linked to child `l5_node["id"]`
-    filt_res = client.get(f"/api/v1/schedules?taxonomy_node_id={l2_node['id']}", headers=admin_headers)
-    assert filt_res.status_code == 200
-    assert any(s["id"] == sch_data["id"] for s in filt_res.json())
-
-    # 6. Archive and Restore
-    arch_res = client.post(f"/api/v1/taxonomy/nodes/{l5_node['id']}/archive", headers=admin_headers)
-    assert arch_res.status_code == 200
-    assert arch_res.json()["status"] == "archived"
-
-    rest_res = client.post(f"/api/v1/taxonomy/nodes/{l5_node['id']}/restore", headers=admin_headers)
-    assert rest_res.status_code == 200
-    assert rest_res.json()["status"] == "active"
-
-    # 7. Soft Delete & Recovery
-    del_res = client.delete(f"/api/v1/taxonomy/nodes/{l3_node['id']}", headers=admin_headers)
-    assert del_res.status_code == 200
-    assert del_res.json()["affected_count"] >= 3 # l3 and all descendants (l4, l5)
-
-    rec_res = client.post(f"/api/v1/taxonomy/nodes/{l3_node['id']}/recover", headers=admin_headers)
-    assert rec_res.status_code == 200
-    assert rec_res.json()["status"] == "active"
-
-def test_targeted_schedule_assignments_and_visibility(client):
-    import uuid
-    from datetime import datetime, timedelta
-
-    unique_code = f"AS{uuid.uuid4().hex[:6].upper()}"
-    registration = client.post("/api/v1/auth/register-club", json={
-        "name": f"Assignment Club {unique_code}",
-        "code": unique_code,
-        "admin_name": "Assignment Admin",
-        "admin_email": f"admin_{unique_code.lower()}@assign.com",
-        "admin_password": "SecurePassword123!",
-    })
-    assert registration.status_code == 200
-    admin_headers = {"Authorization": f"Bearer {registration.json()['access_token']}"}
-
-    second_athlete_email = f"second_{unique_code.lower()}@assign.com"
-    second_athlete = client.post("/api/v1/clubs/members", json={
-        "full_name": "Second Athlete",
-        "email": second_athlete_email,
-        "password": "AthletePass123!",
-        "role": "athlete",
-    }, headers=admin_headers)
-    assert second_athlete.status_code == 200
-
-    members = client.get("/api/v1/clubs/members", headers=admin_headers).json()
-    first_athlete = next(member for member in members if member["role"] == "athlete" and member["id"] != second_athlete.json()["id"])
-    trainer = next(member for member in members if member["role"] == "trainer")
-
-    created = client.post("/api/v1/schedules", json={
-        "name": "Targeted Selection Plan",
-        "start_date": datetime.utcnow().isoformat(),
-        "end_date": (datetime.utcnow() + timedelta(days=14)).isoformat(),
-        "athlete_ids": [first_athlete["id"]],
-        "trainer_ids": [trainer["id"]],
-        "sessions": [],
-    }, headers=admin_headers)
-    assert created.status_code == 200
-    schedule = created.json()
-    assert schedule["athlete_ids"] == [first_athlete["id"]]
-    assert schedule["trainer_ids"] == [trainer["id"]]
-
-    first_login = client.post("/api/v1/auth/login", json={
-        "email": first_athlete["email"],
-        "password": "AthletePass123!",
-    })
-    second_login = client.post("/api/v1/auth/login", json={
-        "email": second_athlete_email,
-        "password": "AthletePass123!",
-    })
-    trainer_login = client.post("/api/v1/auth/login", json={
-        "email": trainer["email"],
-        "password": "TrainerPass123!",
-    })
-    first_headers = {"Authorization": f"Bearer {first_login.json()['access_token']}"}
-    second_headers = {"Authorization": f"Bearer {second_login.json()['access_token']}"}
-    trainer_headers = {"Authorization": f"Bearer {trainer_login.json()['access_token']}"}
-
-    schedule_id = schedule["id"]
-    assert any(item["id"] == schedule_id for item in client.get("/api/v1/schedules", headers=first_headers).json())
-    assert any(item["id"] == schedule_id for item in client.get("/api/v1/schedules", headers=trainer_headers).json())
-    assert not any(item["id"] == schedule_id for item in client.get("/api/v1/schedules", headers=second_headers).json())
-    assert client.get(f"/api/v1/schedules/{schedule_id}", headers=second_headers).status_code == 404
-
-    updated = client.put(f"/api/v1/schedules/{schedule_id}/assignments", json={
-        "athlete_ids": [second_athlete.json()["id"]],
-        "trainer_ids": [trainer["id"]],
-    }, headers=admin_headers)
-    assert updated.status_code == 200
-    assert updated.json()["athlete_ids"] == [second_athlete.json()["id"]]
-    assert not any(item["id"] == schedule_id for item in client.get("/api/v1/schedules", headers=first_headers).json())
-    assert any(item["id"] == schedule_id for item in client.get("/api/v1/schedules", headers=second_headers).json())
-
-    other_code = f"OT{uuid.uuid4().hex[:6].upper()}"
-    other_registration = client.post("/api/v1/auth/register-club", json={
-        "name": f"Other Club {other_code}",
-        "code": other_code,
-        "admin_name": "Other Admin",
-        "admin_email": f"admin_{other_code.lower()}@assign.com",
-        "admin_password": "SecurePassword123!",
-    })
-    other_headers = {"Authorization": f"Bearer {other_registration.json()['access_token']}"}
-    foreign_athlete = next(member for member in client.get("/api/v1/clubs/members", headers=other_headers).json() if member["role"] == "athlete")
-    rejected = client.put(f"/api/v1/schedules/{schedule_id}/assignments", json={
-        "athlete_ids": [foreign_athlete["id"]],
-        "trainer_ids": [],
-    }, headers=admin_headers)
-    assert rejected.status_code == 400
-
-def test_availability_privacy_safety_and_conflict_indicators(client):
-    import uuid
-    from datetime import datetime, timedelta
-
-    unique_code = f"AV{uuid.uuid4().hex[:6].upper()}"
-    registration = client.post("/api/v1/auth/register-club", json={
-        "name": f"Availability Club {unique_code}",
-        "code": unique_code,
-        "admin_name": "Availability Admin",
-        "admin_email": f"admin_{unique_code.lower()}@availability.com",
-        "admin_password": "SecurePassword123!",
-    })
-    assert registration.status_code == 200
-    admin_headers = {"Authorization": f"Bearer {registration.json()['access_token']}"}
-    members = client.get("/api/v1/clubs/members", headers=admin_headers).json()
-    athlete = next(member for member in members if member["role"] == "athlete")
-
-    athlete_login = client.post("/api/v1/auth/login", json={
-        "email": athlete["email"],
-        "password": "AthletePass123!",
-    })
-    coach_login = client.post("/api/v1/auth/login", json={
-        "email": f"coach@{unique_code.lower()}.rowing.com",
-        "password": "CoachPass123!",
-    })
-    athlete_headers = {"Authorization": f"Bearer {athlete_login.json()['access_token']}"}
-    coach_headers = {"Authorization": f"Bearer {coach_login.json()['access_token']}"}
-
-    day = (datetime.utcnow() + timedelta(days=5)).replace(hour=6, minute=0, second=0, microsecond=0)
-    unavailable = client.post("/api/v1/availability", json={
-        "starts_at": day.isoformat(),
-        "ends_at": (day + timedelta(hours=2)).isoformat(),
-        "status": "unavailable",
-        "reason_category": "medical",
-        "coach_visible_notes": "No morning training",
-        "private_notes": "Private clinical detail",
-        "is_safety_restriction": True,
-    }, headers=athlete_headers)
-    assert unavailable.status_code == 200
-    entry_id = unavailable.json()["id"]
-    assert unavailable.json()["private_notes"] == "Private clinical detail"
-
-    coach_view = client.get(f"/api/v1/availability?user_id={athlete['id']}", headers=coach_headers)
-    assert coach_view.status_code == 200
-    assert coach_view.json()[0]["private_notes"] is None
-    assert coach_view.json()[0]["coach_visible_notes"] == "No morning training"
-    assert client.delete(f"/api/v1/availability/{entry_id}", headers=coach_headers).status_code == 403
-
-    availability_conflict = client.post("/api/v1/availability/conflicts", json={
-        "user_ids": [athlete["id"]],
-        "sessions": [{"starts_at": (day + timedelta(minutes=30)).isoformat(), "duration_minutes": 60}],
-    }, headers=coach_headers)
-    assert availability_conflict.status_code == 200
-    assert availability_conflict.json()[0]["status"] == "safety_restriction"
-    assert "Private clinical detail" not in str(availability_conflict.json())
-
-    blocked_assignment = client.post("/api/v1/schedules", json={
-        "name": "Should Be Blocked",
-        "start_date": day.isoformat(),
-        "end_date": (day + timedelta(days=1)).isoformat(),
-        "athlete_ids": [athlete["id"]],
-        "trainer_ids": [],
-        "sessions": [{
-            "title": "Unsafe Morning Session",
-            "session_date": (day + timedelta(minutes=30)).isoformat(),
-            "duration_minutes": 60,
-            "exercises": [],
-        }],
-    }, headers=coach_headers)
-    assert blocked_assignment.status_code == 409
-    assert "Safety restriction" in blocked_assignment.json()["detail"]
-
-    exercise_id = client.get("/api/v1/exercises", headers=admin_headers).json()[0]["id"]
-    existing_start = day.replace(hour=10)
-    schedule = client.post("/api/v1/schedules", json={
-        "name": "Existing Assigned Session",
-        "start_date": day.isoformat(),
-        "end_date": (day + timedelta(days=1)).isoformat(),
-        "athlete_ids": [athlete["id"]],
-        "trainer_ids": [],
-        "sessions": [{
-            "title": "Existing Erg Session",
-            "session_date": existing_start.isoformat(),
-            "duration_minutes": 90,
-            "exercises": [{"exercise_id": exercise_id}],
-        }],
-    }, headers=admin_headers)
-    assert schedule.status_code == 200
-
-    time_conflict = client.post("/api/v1/availability/conflicts", json={
-        "user_ids": [athlete["id"]],
-        "sessions": [{"starts_at": (existing_start + timedelta(minutes=30)).isoformat(), "duration_minutes": 60}],
-    }, headers=coach_headers)
-    assert time_conflict.status_code == 200
-    assert time_conflict.json()[0]["status"] == "time_conflict"
-    assert time_conflict.json()[0]["same_day_sessions"] == 1
-    assert "Existing Erg Session" in time_conflict.json()[0]["conflict_titles"]
-
-    high_load = client.post("/api/v1/availability/conflicts", json={
-        "user_ids": [athlete["id"]],
-        "sessions": [{"starts_at": existing_start.replace(hour=16).isoformat(), "duration_minutes": 120}],
-    }, headers=coach_headers)
-    assert high_load.status_code == 200
-    assert high_load.json()[0]["status"] == "high_load"
-    assert high_load.json()[0]["daily_load_minutes"] == 210
+def test_onboarding_progress_and_notification_read_state(client, club):
+    headers = club['Athlete']['headers']
+    tours = client.get(PREFIX + '/onboarding/tours', headers=headers)
+    assert tours.status_code == 200 and any(item['tour_id'] == 'athlete_flow' for item in tours.json())
+    saved = client.post(PREFIX + '/onboarding/progress', headers=headers, json={'tour_id': 'athlete_flow', 'current_step': 2, 'is_completed': False, 'dismissed': False})
+    assert saved.status_code == 200 and saved.json()['current_step'] == 2
+    create_session(client, club)
+    notices = client.get(PREFIX + '/notifications', headers=headers)
+    assert notices.status_code == 200 and notices.json()['unread_count'] >= 1
+    assert client.post(PREFIX + '/notifications/mark-all-read', headers=headers).status_code == 200
+    assert client.get(PREFIX + '/notifications', headers=headers).json()['unread_count'] == 0

@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
-import { AthleteRankingItem } from '../../types';
+import React, { useEffect, useState } from 'react';
+import { AthleteRankingItem, Equipment } from '../../types';
+import { api } from '../../services/api';
+import { Field, inputClass, buttonClass } from '../common/FormPanel';
+import { useNavigation } from '../../context/NavigationContext';
 import { 
   BarChart3, Trophy, Zap, Activity, Users, Award, 
   ArrowRight, ShieldCheck, CheckCircle2, ChevronRight, Anchor 
@@ -14,22 +17,23 @@ interface CoachGraphicalAnalyticsProps {
 const formatSplit = (seconds?: number) => seconds ? `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, '0')}` : null;
 
 export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = ({ rankings, benchmark2kSplitSeconds, gold2kSplitSeconds }) => {
+  const { navigate } = useNavigation();
+  const [boats, setBoats] = useState<Equipment[]>([]);
+  const [crewName, setCrewName] = useState('');
+  const [boatId, setBoatId] = useState('');
+  const [boatSearch, setBoatSearch] = useState('');
+  const [savingCrew, setSavingCrew] = useState(false);
+  const [crewError, setCrewError] = useState('');
+  const [crewSaved, setCrewSaved] = useState(false);
+  const [savedCrewId, setSavedCrewId] = useState<number | null>(null);
+  useEffect(() => { api.getEquipment().then(setBoats).catch((err) => setCrewError(err.message)); }, []);
   const [selectedAthleteAId, setSelectedAthleteAId] = useState<number>(rankings[0]?.athlete_id || 1);
   const [selectedAthleteBId, setSelectedAthleteBId] = useState<number>(rankings[1]?.athlete_id || 2);
 
   // Boat Lineup Builder State
   const [boatType, setBoatType] = useState<'8+' | '4-' | '4x' | '2x' | '2-' | '1x'>('8+');
-  const [seats, setSeats] = useState<Record<string, number | null>>({
-    'Stroke': rankings[0]?.athlete_id || null,
-    '7': rankings[1]?.athlete_id || null,
-    '6': rankings[2]?.athlete_id || null,
-    '5': rankings[3]?.athlete_id || null,
-    '4': rankings[4]?.athlete_id || null,
-    '3': null,
-    '2': null,
-    'Bow': null,
-    'Cox': null,
-  });
+  const [seats, setSeats] = useState<Record<string, number | null>>({});
+  useEffect(() => { setCrewSaved(false); }, [seats, crewName, boatId]);
 
   const athleteA = rankings.find((r) => r.athlete_id === selectedAthleteAId) || rankings[0];
   const athleteB = rankings.find((r) => r.athlete_id === selectedAthleteBId) || rankings[1] || rankings[0];
@@ -45,8 +49,17 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
     return Number.isFinite(parsed) ? parsed : null;
   };
 
+  const boatSeatsList = {
+    '8+': ['Stroke', '7', '6', '5', '4', '3', '2', 'Bow', 'Cox'],
+    '4-': ['Stroke', '3', '2', 'Bow'],
+    '4x': ['Stroke', '3', '2', 'Bow'],
+    '2x': ['Stroke', 'Bow'],
+    '2-': ['Stroke', 'Bow'],
+    '1x': ['Single Sculler'],
+  }[boatType];
+
   // Calculate boat statistics for currently seated rowers
-  const seatedAthleteIds = Object.values(seats).filter((id): id is number => id !== null);
+  const seatedAthleteIds = Array.from(new Set(boatSeatsList.filter((seat) => seat !== 'Cox').map((seat) => seats[seat]).filter((id): id is number => id != null)));
   const seatedAthletes = seatedAthleteIds.map((id) => rankings.find((r) => r.athlete_id === id)).filter(Boolean) as AthleteRankingItem[];
 
   const knownWeights = seatedAthletes.map((athlete) => athlete.weight_kg).filter((value): value is number => value != null);
@@ -59,66 +72,31 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
   const avg2kSplitSec = knownSplits.length ? knownSplits.reduce((sum, value) => sum + value, 0) / knownSplits.length : undefined;
   const avgBoatSplitFormatted = formatSplit(avg2kSplitSec) || '—';
 
-  const boatSeatsList = {
-    '8+': ['Stroke', '7', '6', '5', '4', '3', '2', 'Bow', 'Cox'],
-    '4-': ['Stroke', '3', '2', 'Bow'],
-    '4x': ['Stroke', '3', '2', 'Bow'],
-    '2x': ['Stroke', 'Bow'],
-    '2-': ['Stroke', 'Bow'],
-    '1x': ['Single Sculler'],
-  }[boatType];
+  const categoryForPreview: Record<string, string> = { '8+': '8+_eight', '4-': '4-_four', '2x': '2x_double_scull', '2-': '2-_pair', '1x': '1x_single_scull' };
+  const matchingBoats = boats.filter((boat) => boat.category === categoryForPreview[boatType]);
+  const saveLineup = async (event: React.FormEvent) => {
+    event.preventDefault(); setSavingCrew(true); setCrewError(''); setCrewSaved(false);
+    try {
+      const positions = Object.fromEntries(boatSeatsList.map((seat) => [seat === 'Single Sculler' ? 'Single' : seat, seats[seat]]));
+      const result = await api.operation<{ id: number }>('/crews' + (savedCrewId ? '/' + savedCrewId : ''), savedCrewId ? 'PUT' : 'POST', { name: crewName.trim(), equipment_id: Number(boatId), seats: positions });
+      setSavedCrewId(result.id);
+      setCrewSaved(true);
+    } catch (err: any) { setCrewError(err.message); } finally { setSavingCrew(false); }
+  };
+
 
   return (
     <div className="space-y-8">
-      {/* 1. Visual 2k Split Pace & Readiness Distribution Graph */}
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div>
-            <div className="flex items-center gap-2">
-              <BarChart3 className="w-5 h-5 text-amber-400" />
-              <h3 className="text-base sm:text-lg font-extrabold text-white">
-                Squad 2,000m Power & Readiness Distribution
-              </h3>
-            </div>
-            <p className="text-xs text-slate-400">
-              Verified athlete results and readiness evidence. {benchmark2kSplitSeconds ? `Club benchmark: ${formatSplit(benchmark2kSplitSeconds)} /500m.` : 'No club benchmark configured.'} Missing measurements remain blank.
-            </p>
-          </div>
-          {gold2kSplitSeconds && <span className="text-xs font-bold text-amber-400 font-mono bg-amber-500/10 px-3 py-1 rounded-xl border border-amber-500/20">Club gold standard: {formatSplit(gold2kSplitSeconds)}</span>}
+      <section className="space-y-5 rounded-3xl border border-slate-800 bg-slate-900 p-6">
+        <div><h3 className="text-lg font-extrabold text-white">Verified 2k RowErg test results</h3>
+          <p className="mt-1 text-xs text-slate-400">Bar length shows recorded test duration. These are measured results, not a readiness score. {benchmark2kSplitSeconds ? 'Club reference split: ' + formatSplit(benchmark2kSplitSeconds) + ' /500m.' : 'No club reference configured.'}</p>
+          {gold2kSplitSeconds && <p className="mt-1 text-xs text-amber-300">Club gold reference: {formatSplit(gold2kSplitSeconds)} /500m</p>}
         </div>
-
-        {/* Visual Bar Distribution Chart */}
-        <div className="space-y-3 pt-2">
-          {rankings.map((ath) => {
-            return (
-              <div key={ath.athlete_id} className="space-y-1">
-                <div className="flex items-center justify-between text-xs font-semibold">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-slate-400 font-bold w-4">#{ath.rank}</span>
-                    <span className="text-white">{ath.athlete_name}</span>
-                    <span className="text-[10px] text-slate-400 uppercase bg-slate-800 px-1.5 py-0.2 rounded font-mono">
-                      {ath.side_preference || 'Not set'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 font-mono">
-                    <span className="text-amber-300 font-bold text-xs">{ath.best_2k_split || '—'}</span>
-                    <span className="text-rowing-400 text-xs hidden sm:inline">{ath.watts_per_kg_2k != null ? `${ath.watts_per_kg_2k} W/kg` : '—'}</span>
-                    <span className="text-emerald-400 font-extrabold text-xs">{ath.overall_readiness_score != null ? `${ath.overall_readiness_score}%` : '—'}</span>
-                  </div>
-                </div>
-
-                {/* Progress Bar with Split Reference Line */}
-                <div className="relative w-full h-3 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-amber-500 via-rowing-500 to-emerald-400 transition-all duration-500"
-                    style={{ width: `${ath.overall_readiness_score || 0}%` }}
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+        <div className="space-y-4">{rankings.map((athlete) => <div key={athlete.athlete_id}>
+          <div className="flex items-center justify-between gap-3 text-xs"><span className="font-semibold text-white">{athlete.rank != null ? '#' + athlete.rank + ' ' : ''}{athlete.athlete_name}</span><span className="text-amber-200">{athlete.best_2k_split ? athlete.best_2k_split + ' /500m' : 'No eligible verified test'}</span></div>
+          {athlete.best_2k_time_sec != null && <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-950"><div className="h-full rounded-full bg-rowing-500" style={{ width: (athlete.best_2k_time_sec / Math.max(...rankings.map((item) => item.best_2k_time_sec || 0)) * 100) + '%' }} /></div>}
+        </div>)}</div>
+      </section>
 
       {/* 2. Head-to-Head Athlete Capability Comparison */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
@@ -127,11 +105,11 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
             <div className="flex items-center gap-2">
               <Zap className="w-5 h-5 text-rowing-400" />
               <h3 className="text-base sm:text-lg font-extrabold text-white">
-                Head-to-Head Seat Race Matrix
+                Athlete benchmark comparison
               </h3>
             </div>
             <p className="text-xs text-slate-400">
-              Select two rowers to compare biometric capacity, aerobic base, and peak power curves.
+              Compare verified test results from the selected period. This is not an on-water seat race.
             </p>
           </div>
 
@@ -176,7 +154,7 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
                 <h4 className="text-base font-extrabold text-white">{athleteA.athlete_name}</h4>
               </div>
               <span className="px-2.5 py-1 rounded-full text-xs font-black bg-rowing-500/20 text-rowing-300 font-mono">
-                Rank #{athleteA.rank}
+                {athleteA.rank != null ? '2k rank #' + athleteA.rank : 'Unranked'}
               </span>
             </div>
 
@@ -204,9 +182,9 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
             </div>
 
             <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-400">Readiness Score:</span>
+              <span className="text-xs font-bold text-slate-400">Scheduled sessions logged:</span>
               <span className="text-lg font-black text-rowing-300 font-mono">
-                {athleteA.overall_readiness_score != null ? `${athleteA.overall_readiness_score}%` : '—'}
+                {athleteA.total_sessions_completed}
               </span>
             </div>
           </div>
@@ -221,7 +199,7 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
                 <h4 className="text-base font-extrabold text-white">{athleteB.athlete_name}</h4>
               </div>
               <span className="px-2.5 py-1 rounded-full text-xs font-black bg-amber-500/20 text-amber-300 font-mono">
-                Rank #{athleteB.rank}
+                {athleteB.rank != null ? '2k rank #' + athleteB.rank : 'Unranked'}
               </span>
             </div>
 
@@ -249,9 +227,9 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
             </div>
 
             <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-400">Readiness Score:</span>
+              <span className="text-xs font-bold text-slate-400">Scheduled sessions logged:</span>
               <span className="text-lg font-black text-amber-300 font-mono">
-                {athleteB.overall_readiness_score != null ? `${athleteB.overall_readiness_score}%` : '—'}
+                {athleteB.total_sessions_completed}
               </span>
             </div>
           </div>
@@ -269,7 +247,7 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
               </h3>
             </div>
             <p className="text-xs text-slate-400">
-              Drag or assign athletes into racing seats. Checks Port/Starboard balance and computes boat average stats.
+              Assign athletes to seats to explore a lineup. Mean erg results are descriptive and do not predict boat speed.
             </p>
           </div>
 
@@ -278,7 +256,7 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
             {(['8+', '4-', '4x', '2x', '2-', '1x'] as const).map((type) => (
               <button
                 key={type}
-                onClick={() => setBoatType(type)}
+                onClick={() => { setBoatType(type); setBoatId(''); setCrewSaved(false); setSavedCrewId(null); }}
                 className={`px-3 py-1 rounded-lg text-xs font-extrabold transition-all ${
                   boatType === type
                     ? 'bg-emerald-500 text-slate-950 shadow'
@@ -292,13 +270,22 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
         </div>
 
         {/* Real-time Computed Boat Lineup Vitals */}
+        <form onSubmit={saveLineup} className="space-y-3 rounded-2xl border border-slate-700 bg-slate-950/50 p-4">
+          <h4 className="text-sm font-bold text-white">Save this lineup as a club crew</h4>
+          <p className="text-xs text-slate-400">Fill every seat, including the cox, then choose a real club boat. Unsaved seat previews are temporary. Saved crews can be edited and reserved in Operations.</p>
+          {crewError && <p role="alert" className="text-xs text-rose-300">{crewError}</p>}
+          {crewSaved && <p role="status" className="text-xs text-emerald-300">Crew saved. Open Operations → Saved crews to edit or reserve it.</p>}
+          <div className="grid gap-3 sm:grid-cols-3"><Field label="Crew name"><input required maxLength={255} value={crewName} onChange={(event) => setCrewName(event.target.value)} className={inputClass} /></Field><Field label="Search matching boats"><input value={boatSearch} onChange={(event) => setBoatSearch(event.target.value)} className={inputClass} /></Field><Field label="Club boat"><select required value={boatId} onChange={(event) => setBoatId(event.target.value)} className={inputClass}><option value="">Choose an actual boat</option>{matchingBoats.filter((boat) => String(boat.id) === boatId || boat.name.toLowerCase().includes(boatSearch.toLowerCase())).map((boat) => <option key={boat.id} value={boat.id}>{boat.name} · {boat.status}</option>)}</select></Field></div>
+          {!matchingBoats.length && <p className="text-xs text-amber-200">No club equipment matches this preview class. Choose a supported class and add the real boat in Equipment first.</p>}
+          <div className="flex flex-wrap gap-2"><button disabled={savingCrew || !boatId || !crewName.trim() || boatSeatsList.some((seat) => !seats[seat])} className={buttonClass}>{savingCrew ? 'Saving…' : 'Save crew'}</button><button type="button" onClick={() => navigate('operations')} className="rounded-xl border border-slate-600 px-4 py-2 text-xs font-bold text-sky-200">Open saved crews & reservations</button></div>
+        </form>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950/80 p-4 rounded-2xl border border-slate-800 text-center font-mono">
           <div>
             <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Seated Rowers</span>
-            <span className="text-base font-extrabold text-white">{seatedAthletes.length} / {boatSeatsList.length}</span>
+            <span className="text-base font-extrabold text-white">{seatedAthletes.length} / {boatSeatsList.filter((seat) => seat !== 'Cox').length}</span>
           </div>
           <div>
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Avg Boat Weight</span>
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Mean rower weight</span>
             <span className="text-base font-extrabold text-rowing-300">{avgWeight ? `${avgWeight} kg` : '—'}</span>
           </div>
           <div>
@@ -306,7 +293,7 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
             <span className="text-base font-extrabold text-amber-400">{portCount}P / {starboardCount}S</span>
           </div>
           <div>
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Est. Boat 2k Pace</span>
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Mean rower erg split</span>
             <span className="text-base font-extrabold text-emerald-400">{avgBoatSplitFormatted}</span>
           </div>
         </div>
@@ -367,7 +354,7 @@ export const CoachGraphicalAnalytics: React.FC<CoachGraphicalAnalyticsProps> = (
                     >
                       <option value="">Choose Rower</option>
                       {rankings.map((r) => (
-                        <option key={r.athlete_id} value={r.athlete_id}>
+                        <option key={r.athlete_id} value={r.athlete_id} disabled={Object.entries(seats).some(([seat, id]) => seat !== seatName && boatSeatsList.includes(seat) && id === r.athlete_id)}>
                           {r.athlete_name} ({r.best_2k_split || 'no 2k result'})
                         </option>
                       ))}

@@ -1,5 +1,5 @@
 import { 
-  User, UserRole, Club, ClubPublic, ClubJoinRequest, ClubInvitation, ClubInvitationPreview, Competition, Equipment, Exercise, Schedule, ScheduleAdherence, TrainingSession,
+  User, UserRole, Club, ClubPublic, ClubJoinRequest, ClubInvitation, ClubInvitationPreview, Competition, Equipment, Exercise, Schedule, ScheduleAdherence, TrainingSession, AthleteRankingItem,
   PerformanceEntry, CoachAnalyticsSummary, TourDefinition, OnboardingProgress,
   NotificationItem, NotificationListResponse, BoathouseCondition,
   TaxonomyNode, TaxonomyNodeTree, TaxonomyNodeCreate, AvailabilityEntry,
@@ -98,11 +98,7 @@ class ApiService {
       throw new Error(errorMsg);
     }
 
-    try {
-      return await response.json();
-    } catch (e) {
-      throw new Error('Received an invalid response format from the server.');
-    }
+    return response.json();
   }
 
   // Auth & Club Registration
@@ -138,6 +134,38 @@ class ApiService {
   }
 
   // Club & Members
+  async operation<T>(path: string, method = 'GET', data?: unknown): Promise<T> {
+    return this.request<T>('/operations' + path, { method, ...(data !== undefined ? { body: JSON.stringify(data) } : {}) });
+  }
+
+  async updateMember(id: number, data: Partial<Omit<User, 'weight_kg' | 'height_cm' | 'side_preference'>> & { weight_kg?: number | null; height_cm?: number | null; side_preference?: string | null }): Promise<User> {
+    return this.request<User>(`/clubs/members/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  async updateProfile(data: { full_name: string; weight_kg: number | null; height_cm: number | null; side_preference: string | null }): Promise<User> {
+    return this.request<User>('/account/profile', { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  async changePassword(current_password: string, new_password: string): Promise<void> {
+    const result = await this.request<{ access_token: string }>('/account/password', { method: 'POST', body: JSON.stringify({ current_password, new_password }) });
+    this.setToken(result.access_token);
+  }
+
+  async changeEmail(current_password: string, new_email: string): Promise<{ message: string }> {
+    return this.request('/account/email-change', { method: 'POST', body: JSON.stringify({ current_password, new_email }) });
+  }
+
+  async forgotPassword(email: string): Promise<{ message: string }> {
+    return this.request('/account/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+  }
+
+  async confirmAccountAction(token: string, new_password?: string): Promise<{ message: string }> {
+    return this.request('/account/confirm', { method: 'POST', body: JSON.stringify({ token, new_password }) });
+  }
+
+  async resendInvitation(id: number): Promise<ClubInvitation> {
+    return this.request(`/membership/invitations/${id}/resend`, { method: 'POST' });
+  }
   async getCurrentClub(): Promise<Club> {
     return this.request<Club>('/clubs/current');
   }
@@ -398,12 +426,14 @@ class ApiService {
 
   // Performance
   async getPerformances(params?: {
+    performance_id?: number;
     athlete_id?: number;
     session_id?: number;
     verified_only?: boolean;
     unverified_only?: boolean;
   }): Promise<PerformanceEntry[]> {
     const query = new URLSearchParams();
+    if (params?.performance_id) query.append('performance_id', params.performance_id.toString());
     if (params?.athlete_id) query.append('athlete_id', params.athlete_id.toString());
     if (params?.session_id) query.append('session_id', params.session_id.toString());
     if (params?.verified_only) query.append('verified_only', 'true');
@@ -431,8 +461,11 @@ class ApiService {
   }
 
   // Analytics
-  async getCoachSummary(): Promise<CoachAnalyticsSummary> {
-    return this.request<CoachAnalyticsSummary>('/analytics/coach-summary');
+  async getMyBenchmarks(): Promise<AthleteRankingItem> {
+    return this.request<AthleteRankingItem>('/analytics/my-benchmarks');
+  }
+  async getCoachSummary(windowDays = 90): Promise<CoachAnalyticsSummary> {
+    return this.request<CoachAnalyticsSummary>(`/analytics/coach-summary?window_days=${windowDays}`);
   }
 
   // Onboarding & Tours
@@ -490,7 +523,7 @@ class ApiService {
     return this.request<BoathouseCondition>('/weather/boathouse-conditions');
   }
 
-  async updateBoathouseConditions(data: Partial<BoathouseCondition> & { broadcast_alert?: boolean }): Promise<BoathouseCondition> {
+  async updateBoathouseConditions(data: Partial<BoathouseCondition> & { broadcast_alert?: boolean; valid_for_hours: number }): Promise<BoathouseCondition> {
     return this.request<BoathouseCondition>('/weather/boathouse-conditions', {
       method: 'POST',
       body: JSON.stringify(data),

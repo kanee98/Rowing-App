@@ -1,4 +1,6 @@
 import logging
+import asyncio
+from contextlib import suppress
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +22,11 @@ from app.api.weather import router as weather_router
 from app.api.taxonomy import router as taxonomy_router
 from app.api.availability import router as availability_router
 from app.api.membership import router as membership_router
+from app.api.operations import router as operations_router
+from app.api.account import router as account_router
+from app.core.migrations import run_migrations
+from app.services.delivery import delivery_loop
+from sqlalchemy import text
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,13 +35,14 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Startup: Create tables if not exist
     logger.info("Initializing database tables...")
-    try:
-        Base.metadata.create_all(bind=engine)
-        run_additive_migrations()
-    except Exception as e:
-        logger.error(f"Error initializing database tables on startup: {e}")
+    run_migrations()
+    delivery_task = asyncio.create_task(delivery_loop()) if settings.EMAIL_WORKER_ENABLED else None
 
     yield
+    if delivery_task:
+        delivery_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await delivery_task
     logger.info("Shutting down application...")
 
 app = FastAPI(
@@ -67,6 +75,18 @@ app.include_router(weather_router, prefix=settings.API_V1_STR)
 app.include_router(taxonomy_router, prefix=settings.API_V1_STR)
 app.include_router(availability_router, prefix=settings.API_V1_STR)
 app.include_router(membership_router, prefix=settings.API_V1_STR)
+app.include_router(operations_router, prefix=settings.API_V1_STR)
+app.include_router(account_router, prefix=settings.API_V1_STR)
+
+@app.get("/health/ready")
+def ready():
+    from fastapi import HTTPException
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database is not ready")
 
 @app.get("/")
 def root():

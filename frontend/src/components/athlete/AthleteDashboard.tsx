@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Schedule, TrainingSession, Exercise, PerformanceEntry } from '../../types';
+import { Schedule, TrainingSession, Exercise, PerformanceEntry, AthleteRankingItem } from '../../types';
+import { utcDate } from '../../lib/dateTime';
 import { api } from '../../services/api';
 import { performanceMetrics } from '../../lib/performanceMetrics';
 import { 
@@ -11,6 +12,7 @@ import { LogPerformanceModal } from '../performance/LogPerformanceModal';
 import { ScheduleCalendar } from '../calendar/ScheduleCalendar';
 import { BoathouseWeatherWidget } from '../weather/BoathouseWeatherWidget';
 import { AvailabilityModal } from '../availability/AvailabilityModal';
+import { useDashboardTab, useNavigation, useNavigationScroll } from '../../context/NavigationContext';
 
 export const AthleteDashboard: React.FC = () => {
   const { user } = useAuth();
@@ -18,7 +20,11 @@ export const AthleteDashboard: React.FC = () => {
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [performances, setPerformances] = useState<PerformanceEntry[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [viewTab, setViewTab] = useState<'today' | 'calendar' | 'history'>('today');
+  const [viewTab, setViewTab] = useDashboardTab(['today', 'calendar', 'history', 'conditions'] as const, 'today');
+  const { destination, navigate } = useNavigation();
+  const [benchmark, setBenchmark] = useState<AthleteRankingItem | null>(null);
+  useNavigationScroll(viewTab === 'conditions' ? 'boathouse-conditions' : viewTab === 'history' ? destination.target ? `performance-${destination.target}` : 'tour-verification-status' : destination.target ? 'tour-schedule-calendar' : 'athlete-navigation', !loading && (viewTab !== 'history' || !destination.target || performances.some((item) => item.id === destination.target)));
+  useEffect(() => { if (destination.view === 'today' && destination.target) setSelectedScheduleId(destination.target); }, [destination.revision]);
   const [selectedScheduleId, setSelectedScheduleId] = useState<number | null>(null);
   const [availabilityOpen, setAvailabilityOpen] = useState(false);
 
@@ -28,14 +34,16 @@ export const AthleteDashboard: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [scList, exList, perfList] = await Promise.all([
+      const [scList, exList, perfList, benchmarkData] = await Promise.all([
         api.getSchedules(),
         api.getExercises(),
-        api.getPerformances({ athlete_id: user?.id })
+        api.getPerformances({ athlete_id: user?.id }),
+        api.getMyBenchmarks(),
       ]);
       setSchedules(scList);
       setExercises(exList);
       setPerformances(perfList);
+      setBenchmark(benchmarkData);
     } catch (err) {
       console.warn('Failed loading athlete dashboard data:', err);
     } finally {
@@ -46,15 +54,17 @@ export const AthleteDashboard: React.FC = () => {
   useEffect(() => {
     loadData();
   }, [user]);
+  useEffect(() => {
+    if (loading || viewTab !== 'history' || !destination.target) return;
+    let active = true;
+    api.getPerformances({ performance_id: destination.target }).then((items) => {
+      if (active && items.length) setPerformances((old) => old.some((item) => item.id === items[0].id) ? old : [...items, ...old]);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [loading, destination.revision, viewTab]);
 
-  // Compute Personal Bests
-  const best2k = performances
-    .filter(p => p.actual_distance_m === 2000 || p.exercise_name?.includes('2,000m'))
-    .sort((a, b) => (a.avg_split_seconds || 9999) - (b.avg_split_seconds || 9999))[0];
-
-  const best5k = performances
-    .filter(p => p.actual_distance_m === 5000 || p.exercise_name?.includes('5,000m'))
-    .sort((a, b) => (a.avg_split_seconds || 9999) - (b.avg_split_seconds || 9999))[0];
+  const best2k = { avg_split_formatted: benchmark?.best_2k_split, avg_watts: benchmark?.best_2k_watts };
+  const best5k = { avg_split_formatted: benchmark?.best_5k_split };
 
   const activeSchedule = schedules.find((schedule) => schedule.id === selectedScheduleId)
     || schedules.find((schedule) => schedule.is_active)
@@ -109,7 +119,7 @@ export const AthleteDashboard: React.FC = () => {
       <div id="tour-personal-bests" className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">2,000m PB Split</span>
+            <span className="text-xs font-semibold uppercase tracking-wider">Verified 2k · Last 90 days</span>
             <Trophy className="w-4 h-4 text-amber-400" />
           </div>
           <div>
@@ -143,7 +153,7 @@ export const AthleteDashboard: React.FC = () => {
 
         <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">5,000m PB Split</span>
+            <span className="text-xs font-semibold uppercase tracking-wider">Verified 5k · Last 90 days</span>
             <Activity className="w-4 h-4 text-emerald-400" />
           </div>
           <div>
@@ -151,7 +161,7 @@ export const AthleteDashboard: React.FC = () => {
               {best5k?.avg_split_formatted || '—'}
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              Aerobic Threshold
+              Comparable Concept2 RowErg tests
             </div>
           </div>
         </div>
@@ -163,7 +173,7 @@ export const AthleteDashboard: React.FC = () => {
           </div>
           <div>
             <div className="text-xl sm:text-2xl font-black text-purple-400 font-mono">
-              {performances.length} Sessions
+              {performances.length} recent logs
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
               {performances.filter(p => p.is_verified).length} Verified by Trainers
@@ -176,7 +186,7 @@ export const AthleteDashboard: React.FC = () => {
       <BoathouseWeatherWidget userRole="athlete" />
 
       {/* Navigation Sub-Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
+      <div id="athlete-navigation" className="scroll-mt-24 flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
         <button
           onClick={() => setViewTab('today')}
           className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
@@ -204,6 +214,7 @@ export const AthleteDashboard: React.FC = () => {
         >
           <CalendarOff className="w-4 h-4" /> My Availability
         </button>
+        <button type="button" onClick={() => navigate('operations')} className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-bold text-white">Attendance & RSVP</button>
       </div>
 
       {viewTab === 'calendar' ? (
@@ -216,7 +227,7 @@ export const AthleteDashboard: React.FC = () => {
         /* Main Grid: My Training Schedule vs Recent Performance Activity */
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           {/* Left 7 cols: Assigned Schedule & Sessions */}
-          <div id="tour-schedule-calendar" className="lg:col-span-7 space-y-4">
+          <div id="tour-schedule-calendar" className={'scroll-mt-24 lg:col-span-7 space-y-4 ' + (viewTab === 'history' ? 'hidden' : '')}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Calendar className="w-5 h-5 text-rowing-400" />
@@ -272,14 +283,16 @@ export const AthleteDashboard: React.FC = () => {
                       <h4 className="text-base font-bold text-white mt-1 group-hover:text-rowing-300 transition-colors">
                         {sess.title}
                       </h4>
+                      <p className="mt-1 text-xs capitalize text-slate-400">{sess.status}{sess.change_reason ? ' · ' + sess.change_reason : ''}</p>
+                      <button type="button" className="mt-2 rounded-lg bg-sky-600 px-3 py-2 text-xs font-bold text-white" onClick={() => navigate(`operations/${sess.id}`)}>RSVP / Attendance</button>
                     </div>
 
                     <button
-                      onClick={() => openQuickLog(sess)}
+                      disabled={sess.status === 'cancelled'} onClick={() => openQuickLog(sess)}
                       className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-rowing-500/20 hover:bg-rowing-500/30 text-rowing-300 text-xs font-bold border border-rowing-500/30 transition-all shrink-0 self-start sm:self-center"
                     >
                       <PlusCircle className="w-3.5 h-3.5" />
-                      <span>Log This Piece</span>
+                      <span>{sess.status === 'cancelled' ? 'Cancelled' : 'Log This Piece'}</span>
                     </button>
                   </div>
 
@@ -320,7 +333,7 @@ export const AthleteDashboard: React.FC = () => {
         </div>
 
         {/* Right 5 cols: Performance Activity & Trainer Feedback */}
-        <div id="tour-verification-status" className="lg:col-span-5 space-y-4">
+        <div id="tour-verification-status" className={'scroll-mt-24 space-y-4 ' + (viewTab === 'history' ? 'lg:col-span-12' : 'lg:col-span-5')}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <CheckCircle className="w-5 h-5 text-emerald-400" />
@@ -334,6 +347,7 @@ export const AthleteDashboard: React.FC = () => {
             {performances.map((perf) => (
               <div 
                 key={perf.id}
+                id={`performance-${perf.id}`}
                 className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-md space-y-2.5"
               >
                 <div className="flex items-start justify-between gap-2">

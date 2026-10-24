@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { utcDate } from '../../lib/dateTime';
+import { useNavigation } from '../../context/NavigationContext';
 import { TrainingSession, Schedule, Competition } from '../../types';
 import { 
   ChevronLeft, ChevronRight, Calendar as CalendarIcon, Trophy, 
@@ -21,6 +23,7 @@ export const ScheduleCalendar: React.FC<ScheduleCalendarProps> = ({
   onAddSession,
   userRole,
 }) => {
+  const { navigate } = useNavigation();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<Date>(new Date());
   const [viewMode, setViewMode] = useState<'month' | 'week'>('month');
@@ -376,7 +379,7 @@ export const ScheduleCalendar: React.FC<ScheduleCalendarProps> = ({
               selectedDaySessions.map((sess) => (
                 <div
                   key={sess.id}
-                  onClick={() => onSelectSession && onSelectSession(sess)}
+                  onClick={() => sess.status !== 'cancelled' && onSelectSession?.(sess)}
                   className="bg-slate-950/80 border border-slate-800 hover:border-rowing-500/50 rounded-2xl p-3.5 shadow space-y-2 cursor-pointer transition-all group"
                 >
                   <div className="flex items-center justify-between">
@@ -398,6 +401,8 @@ export const ScheduleCalendar: React.FC<ScheduleCalendarProps> = ({
                   <h5 className="text-xs font-bold text-white group-hover:text-rowing-300 transition-colors">
                     {sess.title}
                   </h5>
+                  <p className={'text-xs capitalize ' + (sess.status === 'cancelled' ? 'text-rose-300' : 'text-slate-400')}>{sess.status}{sess.change_reason ? ' · ' + sess.change_reason : ''}</p>
+                  <button type="button" onClick={(event) => { event.stopPropagation(); navigate(`operations/${sess.id}`); }} className="rounded-lg bg-sky-500/15 px-3 py-2 text-xs font-bold text-sky-200">RSVP / Attendance / Manage</button>
 
                   {sess.instructions && (
                     <p className="text-[11px] text-slate-300 bg-slate-900/60 p-2 rounded-xl border border-slate-800/50 leading-relaxed">

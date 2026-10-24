@@ -71,7 +71,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Account is deactivated")
 
-    access_token = create_access_token(subject=user.id)
+    access_token = create_access_token(subject=user.id, token_version=user.token_version)
     user_out = UserOut.model_validate(user)
     if user.club:
         user_out.club_name = user.club.name
@@ -90,7 +90,9 @@ def login_form(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = D
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
         )
-    access_token = create_access_token(subject=user.id)
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="Account is deactivated")
+    access_token = create_access_token(subject=user.id, token_version=user.token_version)
     user_out = UserOut.model_validate(user)
     if user.club:
         user_out.club_name = user.club.name

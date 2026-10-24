@@ -25,6 +25,16 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
+    PUBLIC_APP_URL: str = "http://localhost:3000"
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_FROM: str = ""
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_STARTTLS: bool = True
+    SMTP_SSL: bool = False
+    EMAIL_WORKER_ENABLED: bool = True
+    REMINDER_HOURS: int = 24
 
     def validate_production(self):
         if self.ENVIRONMENT.lower() == "production" and self.SECRET_KEY == "change-me-in-production":

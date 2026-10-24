@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.models.models import PerformanceEntry, User, UserRole, Exercise, TrainingSession, Schedule, ScheduleAssignment, SessionExercise
+from app.models.models import PerformanceEntry, User, UserRole, Exercise, TrainingSession, Schedule, ScheduleAssignment, SessionExercise, EquipmentCategory
 from app.schemas.schemas import PerformanceEntryCreate, PerformanceEntryOut, PerformanceVerify
 from app.api.deps import get_current_user, require_roles
 from app.services.analytics_service import format_split
@@ -36,6 +36,7 @@ def compute_rowing_metrics(payload: PerformanceEntryCreate, derive_erg_watts: bo
 
 @router.get("", response_model=List[PerformanceEntryOut])
 def list_performances(
+    performance_id: Optional[int] = None,
     athlete_id: Optional[int] = None,
     session_id: Optional[int] = None,
     verified_only: Optional[bool] = None,
@@ -55,6 +56,8 @@ def list_performances(
 
     if session_id:
         query = query.filter(PerformanceEntry.session_id == session_id)
+    if performance_id:
+        query = query.filter(PerformanceEntry.id == performance_id)
     if verified_only:
         query = query.filter(PerformanceEntry.is_verified == True)
     if unverified_only:
@@ -100,6 +103,8 @@ def record_performance(
         ).first()
         if not session:
             raise HTTPException(status_code=403, detail="This session is not assigned to you")
+        if session.status == "cancelled":
+            raise HTTPException(status_code=409, detail="This session was cancelled. Choose another session or log a standalone workout.")
         is_prescribed = db.query(SessionExercise.id).filter(
             SessionExercise.session_id == session.id,
             SessionExercise.exercise_id == exercise.id,
@@ -108,7 +113,7 @@ def record_performance(
             raise HTTPException(status_code=400, detail="Exercise is not prescribed in this session")
     split_sec, dur_sec, watts = compute_rowing_metrics(
         payload,
-        derive_erg_watts=exercise.category.value in ["erg_test", "erg_intervals"],
+        derive_erg_watts=bool(exercise.equipment and exercise.equipment.category == EquipmentCategory.CONCEPT2_ROWERG),
     )
 
     entry = PerformanceEntry(
@@ -129,7 +134,7 @@ def record_performance(
         from app.api.notifications import dispatch_notification
         split_txt = f" ({po.avg_split_formatted}/500m)" if po.avg_split_seconds else ""
         for recipient in db.query(User).filter(User.club_id == current_user.club_id, User.role.in_([UserRole.TRAINER, UserRole.COACH]), User.id != current_user.id).all():
-            dispatch_notification(db=db, user_id=recipient.id, club_id=current_user.club_id, title=f"📥 New Workout: {current_user.full_name}", message=f"{current_user.full_name} submitted a {exercise.name} session{split_txt}. Ready for technical verification.", notif_type="performance_logged", link_action="verify")
+            dispatch_notification(db=db, user_id=recipient.id, club_id=current_user.club_id, title=f"📥 New Workout: {current_user.full_name}", message=f"{current_user.full_name} submitted a {exercise.name} session{split_txt}. Ready for technical verification.", notif_type="performance_logged", link_action=f"verify/{entry.id}")
         db.commit()
     except Exception:
         pass
@@ -169,7 +174,7 @@ def verify_performance(
             title=f"✅ Workout Verified{rating_suffix}",
             message=f"{current_user.full_name} verified your {ex_name} performance.{fb_snippet}",
             notif_type="verification_completed",
-            link_action="history"
+            link_action=f"history/{entry.id}"
         )
         db.commit()
     except Exception:

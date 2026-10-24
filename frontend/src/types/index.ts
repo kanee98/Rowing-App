@@ -85,6 +85,7 @@ export interface ClubInvitation {
   revoked_at?: string;
   created_at: string;
   token?: string;
+  email_queued?: boolean;
 }
 
 export interface ClubInvitationPreview {
@@ -162,6 +163,8 @@ export interface SessionExercise {
 }
 
 export interface TrainingSession {
+  status: 'scheduled' | 'cancelled' | 'completed';
+  change_reason?: string;
   id: number;
   schedule_id: number;
   trainer_id?: number;
@@ -301,7 +304,9 @@ export interface AthleteRankingItem {
   best_5k_time_sec?: number;
   avg_verified_rating?: number;
   overall_readiness_score?: number;
-  rank: number;
+  rank: number | null;
+  best_2k_recorded_at?: string | null;
+  best_5k_recorded_at?: string | null;
 }
 
 export interface ExerciseBenchmarkItem {
@@ -314,6 +319,9 @@ export interface ExerciseBenchmarkItem {
 }
 
 export interface CoachAnalyticsSummary {
+  window_days: number;
+  as_of: string;
+  benchmark_definition: string;
   total_athletes: number;
   total_trainers: number;
   total_workouts_logged: number;
@@ -368,17 +376,20 @@ export interface NotificationListResponse {
 }
 
 export interface BoathouseCondition {
-  id: number;
+  id?: number | null;
   club_id: number;
-  flag_status: SafetyFlagStatus;
-  wind_speed_knots: number;
-  wind_direction: string;
-  water_temp_c: number;
-  air_temp_c: number;
-  stream_flow_rate: string;
-  safety_notes: string;
+  report_status: 'not_reported' | 'current' | 'outdated';
+  report_source?: string | null;
+  flag_status?: SafetyFlagStatus | null;
+  wind_speed_knots?: number | null;
+  wind_direction?: string | null;
+  water_temp_c?: number | null;
+  air_temp_c?: number | null;
+  stream_flow_rate?: string | null;
+  safety_notes?: string | null;
   updated_by_id?: number;
-  updated_at: string;
+  updated_at?: string | null;
+  valid_until?: string | null;
 }
 
 export type TaxonomyNodeStatus = 'active' | 'archived' | 'soft_deleted';

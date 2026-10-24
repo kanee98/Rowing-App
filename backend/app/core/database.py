@@ -85,6 +85,21 @@ def run_additive_migrations():
     bool_type = "BIT" if is_mssql else "BOOLEAN"
 
     with engine.connect() as conn:
+        if "boathouse_conditions" in tables:
+            columns = [c["name"] for c in inspector.get_columns("boathouse_conditions")]
+            if "report_source" not in columns:
+                try:
+                    conn.execute(text(f"ALTER TABLE boathouse_conditions {add_kw} report_source VARCHAR(32) NOT NULL DEFAULT 'legacy_unverified'"))
+                    conn.commit()
+                except Exception as e:
+                    logger.debug("Column report_source already present or error: %s", e)
+            if "valid_until" not in columns:
+                try:
+                    conn.execute(text(f"ALTER TABLE boathouse_conditions {add_kw} valid_until DATETIME NULL"))
+                    conn.commit()
+                except Exception as e:
+                    logger.debug("Column valid_until already present or error: %s", e)
+
         if "clubs" in tables:
             columns = [c["name"] for c in inspector.get_columns("clubs")]
             for column_name in ["benchmark_2k_split_seconds", "gold_2k_split_seconds"]:
@@ -155,8 +170,7 @@ def run_additive_migrations():
                 except Exception as e:
                     logger.debug("Column taxonomy_path_snapshot already present or error: %s", e)
 
-            # Older demo schedules embedded the weekday in the title. The date is
-            # authoritative; keep the title reusable and derive day_of_week from it.
+            # Older demo schedules embedded the weekday in the title.
             try:
                 rows = conn.execute(text("SELECT id, title, session_date, day_of_week FROM training_sessions")).mappings().all()
                 weekday_prefixes = ("Monday: ", "Tuesday: ", "Wednesday: ", "Thursday: ", "Friday: ", "Saturday: ", "Sunday: ")

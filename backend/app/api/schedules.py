@@ -13,6 +13,7 @@ from app.schemas.schemas import (
     ScheduleAssignmentUpdate, UserOut
 )
 from app.api.deps import get_current_user, require_roles
+from app.services.club_operations import lock_club, validate_participant_conflicts, validate_proposed_sessions
 from app.api.taxonomy import compute_node_full_path, get_node_descendant_ids
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
@@ -46,6 +47,16 @@ def _validate_session_exercises(db: Session, club_id: int, sessions) -> None:
     ).all()}
     if valid_ids != exercise_ids:
         raise HTTPException(status_code=400, detail="A selected exercise is invalid, archived, or belongs to another club")
+
+def _validate_session_safety(db: Session, schedule: Schedule, payload: TrainingSessionCreate, current_user: User, exclude_session=None) -> None:
+    users = {assignment.user_id: assignment.user for assignment in schedule.assignments if assignment.user is not None}
+    if payload.trainer_id:
+        for trainer in _validated_assignees(db, current_user.club_id, [payload.trainer_id], UserRole.TRAINER):
+            users[trainer.id] = trainer
+    _ensure_no_safety_restrictions(db, list(users.values()), [payload], current_user)
+    from app.services.club_operations import validate_participant_conflicts
+    start = payload.session_date.astimezone(timezone.utc).replace(tzinfo=None) if payload.session_date.tzinfo else payload.session_date
+    validate_participant_conflicts(db, list(users), start, start + timedelta(minutes=payload.duration_minutes), exclude_session)
 
 def _set_assignments(
     db: Session,
@@ -182,15 +193,20 @@ def create_schedule(
     current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])),
     db: Session = Depends(get_db)
 ):
+    lock_club(db, current_user)
     trainer_ids = list(dict.fromkeys(
         payload.trainer_ids + [session.trainer_id for session in payload.sessions if session.trainer_id]
     ))
     if not payload.athlete_ids:
         raise HTTPException(status_code=400, detail="Select at least one athlete for this schedule")
+    validate_proposed_sessions(payload.sessions)
     _validate_session_exercises(db, current_user.club_id, payload.sessions)
     athletes = _validated_assignees(db, current_user.club_id, payload.athlete_ids, UserRole.ATHLETE)
     trainers = _validated_assignees(db, current_user.club_id, trainer_ids, UserRole.TRAINER)
     _ensure_no_safety_restrictions(db, athletes + trainers, payload.sessions, current_user)
+    for proposed in payload.sessions:
+        start = proposed.session_date.astimezone(timezone.utc).replace(tzinfo=None) if proposed.session_date.tzinfo else proposed.session_date
+        validate_participant_conflicts(db, [person.id for person in athletes + trainers], start, start + timedelta(minutes=proposed.duration_minutes))
 
     # Snapshot taxonomy node path if provided
     taxonomy_path = None
@@ -282,7 +298,7 @@ def create_schedule(
             db=db, club_id=current_user.club_id,
             title=f"📋 New Schedule Assigned: {schedule.name}",
             message=f"Coach {current_user.full_name} assigned you a training plan ({schedule.phase.replace('_', ' ')}{comp_info}) with {len(payload.sessions)} sessions.",
-            notif_type="schedule_assigned", link_action="schedules",
+            notif_type="schedule_assigned", link_action=f"schedules/{schedule.id}",
         )
         for user in athletes + trainers:
             dispatch_notification(user_id=user.id, **notification_args)
@@ -299,6 +315,7 @@ def update_schedule_assignments(
     current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])),
     db: Session = Depends(get_db),
 ):
+    lock_club(db, current_user)
     schedule = db.query(Schedule).filter(
         Schedule.id == schedule_id,
         Schedule.club_id == current_user.club_id,
@@ -311,6 +328,16 @@ def update_schedule_assignments(
         raise HTTPException(status_code=400, detail="A schedule must remain assigned to at least one athlete")
     trainers = _validated_assignees(db, current_user.club_id, payload.trainer_ids, UserRole.TRAINER)
     _ensure_no_safety_restrictions(db, athletes + trainers, schedule.sessions, current_user)
+    for session in schedule.sessions:
+        if session.status != 'scheduled':
+            continue
+        validate_participant_conflicts(db, [person.id for person in athletes + trainers], session.session_date,
+            session.session_date + timedelta(minutes=session.duration_minutes), session.id)
+    from app.models.operations import Reservation, Crew
+    selected_athletes = {person.id for person in athletes}
+    for booking in db.query(Reservation).join(TrainingSession, TrainingSession.id == Reservation.session_id).filter(TrainingSession.schedule_id == schedule.id, Reservation.status == 'booked').all():
+        if not set(db.get(Crew, booking.crew_id).seats.values()).issubset(selected_athletes):
+            raise HTTPException(409, detail='Cancel linked crew reservations before removing those athletes from the schedule')
     previous_users = {assignment.user_id: assignment.user for assignment in schedule.assignments}
     previous_ids = set(previous_users)
     _set_assignments(db, schedule, athletes, trainers, current_user.id)
@@ -327,7 +354,7 @@ def update_schedule_assignments(
                     title=f"📋 Schedule Assigned: {schedule.name}",
                     message=f"Coach {current_user.full_name} assigned you to {schedule.name}.",
                     notif_type="schedule_assigned",
-                    link_action="schedules",
+                    link_action=f"schedules/{schedule.id}",
                 )
         selected_ids = {user.id for user in athletes + trainers}
         for user_id in previous_ids - selected_ids:
@@ -356,6 +383,7 @@ def add_session_to_schedule(
     current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])),
     db: Session = Depends(get_db)
 ):
+    lock_club(db, current_user)
     schedule = db.query(Schedule).filter(Schedule.id == schedule_id, Schedule.club_id == current_user.club_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -363,6 +391,7 @@ def add_session_to_schedule(
     if payload.trainer_id:
         _validated_assignees(db, current_user.club_id, [payload.trainer_id], UserRole.TRAINER)
     _validate_session_exercises(db, current_user.club_id, [payload])
+    _validate_session_safety(db, schedule, payload, current_user)
 
     taxonomy_node_id = payload.taxonomy_node_id or schedule.taxonomy_node_id
     taxonomy_path = schedule.taxonomy_path_snapshot
@@ -434,6 +463,7 @@ def update_schedule_session(
     current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])),
     db: Session = Depends(get_db),
 ):
+    lock_club(db, current_user)
     schedule = db.query(Schedule).filter(
         Schedule.id == schedule_id,
         Schedule.club_id == current_user.club_id,
@@ -450,6 +480,13 @@ def update_schedule_session(
     if payload.trainer_id:
         _validated_assignees(db, current_user.club_id, [payload.trainer_id], UserRole.TRAINER)
     _validate_session_exercises(db, current_user.club_id, [payload])
+    _validate_session_safety(db, schedule, payload, current_user, session.id)
+    from app.models.operations import Reservation
+    start = payload.session_date.astimezone(timezone.utc).replace(tzinfo=None) if payload.session_date.tzinfo else payload.session_date
+    if start != session.session_date or payload.duration_minutes != session.duration_minutes:
+        raise HTTPException(409, detail="Use Operations → Reschedule to change the time, recheck conflicts and notify participants")
+    if session.status != "scheduled":
+        raise HTTPException(409, detail="Restore a cancelled session before editing it")
 
     taxonomy_node_id = payload.taxonomy_node_id or schedule.taxonomy_node_id
     taxonomy_path = schedule.taxonomy_path_snapshot
@@ -466,8 +503,8 @@ def update_schedule_session(
     session.taxonomy_node_id = taxonomy_node_id
     session.taxonomy_path_snapshot = taxonomy_path
     session.title = payload.title
-    session.day_of_week = payload.day_of_week
-    session.session_date = payload.session_date
+    session.day_of_week = start.weekday()
+    session.session_date = start
     session.duration_minutes = payload.duration_minutes
     session.session_type = payload.session_type
     session.location = payload.location

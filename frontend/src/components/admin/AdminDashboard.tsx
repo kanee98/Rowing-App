@@ -1,14 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { User, Club } from '../../types';
+import { User, Club, UserRole } from '../../types';
 import { api } from '../../services/api';
-import { ShieldCheck, Users, PlusCircle, Copy } from 'lucide-react';
+import { ShieldCheck, PlusCircle, Copy } from 'lucide-react';
+import { MembersManager } from './MembersManager';
 import { MembershipManager } from '../membership/MembershipManager';
+import { BoathouseWeatherWidget } from '../weather/BoathouseWeatherWidget';
+import { useNavigation, useNavigationScroll } from '../../context/NavigationContext';
 
 export const AdminDashboard: React.FC = () => {
   const [club, setClub] = useState<Club | null>(null);
   const [members, setMembers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [invitationRequest, setInvitationRequest] = useState<{ role: UserRole; key: number }>();
+  const { destination, navigate } = useNavigation();
+  useNavigationScroll(destination.view === 'members' ? 'tour-member-management' : destination.view === 'membership' ? 'membership-center' : destination.view === 'conditions' ? 'boathouse-conditions' : destination.view === 'overview' ? 'tour-club-overview' : undefined, !loading);
+
+  const openInvitation = (role: UserRole) => {
+    setInvitationRequest({ role, key: Date.now() });
+  };
 
   const loadData = async () => {
     try {
@@ -38,9 +48,9 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const athletes = members.filter((m) => m.role === 'athlete');
-  const coaches = members.filter((m) => m.role === 'coach');
-  const trainers = members.filter((m) => m.role === 'trainer');
+  const athletes = members.filter((m) => m.role === 'athlete' && m.is_active);
+  const coaches = members.filter((m) => m.role === 'coach' && m.is_active);
+  const trainers = members.filter((m) => m.role === 'trainer' && m.is_active);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-8">
@@ -65,6 +75,13 @@ export const AdminDashboard: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => navigate('operations')} className="rounded-xl bg-sky-600 px-4 py-2.5 text-xs font-bold text-white">Club operations</button>
+            <button type="button" onClick={() => openInvitation('coach')} className="flex items-center gap-2 rounded-2xl bg-amber-500 px-4 py-2.5 text-xs font-bold text-slate-950 hover:bg-amber-400">
+              <PlusCircle className="h-4 w-4" /> Invite Coach
+            </button>
+            <button type="button" onClick={() => openInvitation('trainer')} className="flex items-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/20">
+              <PlusCircle className="h-4 w-4" /> Invite Trainer
+            </button>
             <button
               onClick={handleCopyCode}
               className="px-4 py-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 flex items-center gap-2 transition-all"
@@ -115,90 +132,16 @@ export const AdminDashboard: React.FC = () => {
             Total Members
           </span>
           <span className="text-2xl font-black text-purple-400 font-mono">{members.length}</span>
-          <span className="text-[10px] text-slate-500 block mt-1">Active Club Accounts</span>
+          <span className="text-[10px] text-slate-500 block mt-1">Including suspended accounts</span>
         </div>
       </div>
 
+      <BoathouseWeatherWidget userRole="admin" />
       <div id="membership-center" className="scroll-mt-24">
-        <MembershipManager userRole="admin" onChanged={loadData} />
+        <MembershipManager userRole="admin" onChanged={loadData} invitationRequest={invitationRequest} />
       </div>
 
-      {/* Member Management Roster */}
-      <div id="tour-member-management" className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Users className="w-5 h-5 text-purple-400" />
-            <h3 className="text-base sm:text-lg font-extrabold text-white">
-              Club Member Roster ({members.length})
-            </h3>
-          </div>
-          <button
-            onClick={() => document.getElementById('membership-center')?.scrollIntoView({ behavior: 'smooth' })}
-            className="px-3.5 py-1.5 rounded-xl bg-purple-500/20 text-purple-300 border border-purple-500/30 text-xs font-bold hover:bg-purple-500/30 transition-all flex items-center gap-1.5"
-          >
-            <PlusCircle className="w-4 h-4" /> Invite or approve member
-          </button>
-        </div>
-
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-slate-950/80 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-800">
-                <tr>
-                  <th className="py-4 px-4">Member Name</th>
-                  <th className="py-4 px-3">Role</th>
-                  <th className="py-4 px-3">Email</th>
-                  <th className="py-4 px-3">Weight Class</th>
-                  <th className="py-4 px-3">Side Preference</th>
-                  <th className="py-4 px-4 text-right">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-medium">
-                {members.map((m) => (
-                  <tr key={m.id} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="py-3.5 px-4 flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-full bg-slate-800 flex items-center justify-center font-bold text-xs text-purple-300">
-                        {m.full_name.charAt(0)}
-                      </div>
-                      <span className="font-bold text-white">{m.full_name}</span>
-                    </td>
-
-                    <td className="py-3.5 px-3">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        m.role === 'coach' ? 'bg-amber-500/20 text-amber-300' :
-                        m.role === 'trainer' ? 'bg-emerald-500/20 text-emerald-300' :
-                        m.role === 'admin' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'
-                      }`}>
-                        {m.role}
-                      </span>
-                    </td>
-
-                    <td className="py-3.5 px-3 font-mono text-slate-400">
-                      {m.email}
-                    </td>
-
-                    <td className="py-3.5 px-3 font-mono">
-                      {m.weight_kg ? `${m.weight_kg} kg` : '—'}
-                    </td>
-
-                    <td className="py-3.5 px-3">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-slate-800 text-slate-300">
-                        {m.side_preference || 'Not set'}
-                      </span>
-                    </td>
-
-                    <td className="py-3.5 px-4 text-right">
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400">
-                        ● Active
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
+      <MembersManager onChanged={loadData} />
     </div>
   );
 };

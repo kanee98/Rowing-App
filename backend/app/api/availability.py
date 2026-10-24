@@ -156,6 +156,7 @@ def check_assignment_conflicts(
         ScheduleAssignment.user_id.in_(user_ids),
         TrainingSession.session_date >= earliest,
         TrainingSession.session_date <= latest,
+        TrainingSession.status != "cancelled",
     )
     if payload.exclude_schedule_id:
         session_query = session_query.filter(Schedule.id != payload.exclude_schedule_id)

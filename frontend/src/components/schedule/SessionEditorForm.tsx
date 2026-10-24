@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { CalendarDays, Clock3 } from 'lucide-react';
 import { Exercise, User } from '../../types';
 import { ExercisePrescriptionBuilder } from './ExercisePrescriptionBuilder';
+import { toUtcISOString } from '../../lib/dateTime';
 
 export interface ExercisePrescriptionDraft {
   client_id: string;
@@ -110,7 +111,7 @@ export const sessionDraftToPayload = (session: SessionDraft, taxonomyNodeId?: nu
     taxonomy_node_id: taxonomyNodeId,
     title: session.title,
     day_of_week: (new Date(session.session_date).getDay() + 6) % 7,
-    session_date: session.session_date.length === 16 ? `${session.session_date}:00` : session.session_date,
+    session_date: toUtcISOString(session.session_date),
     duration_minutes: session.duration_minutes,
     session_type: session.session_type,
     location: session.location || undefined,
@@ -139,9 +140,10 @@ interface Props {
   allowRecurrence?: boolean;
   saveLabel?: string;
   saving?: boolean;
+  timingLocked?: boolean;
 }
 
-export const SessionEditorForm: React.FC<Props> = ({ value, exercises, trainers, onChange, onSave, onCancel, minDate, maxDate, allowRecurrence = true, saveLabel = 'Save session', saving = false }) => {
+export const SessionEditorForm: React.FC<Props> = ({ value, exercises, trainers, onChange, onSave, onCancel, minDate, maxDate, allowRecurrence = true, saveLabel = 'Save session', saving = false, timingLocked = false }) => {
   const [templateName, setTemplateName] = useState('');
   const [templates, setTemplates] = useState<Array<{ name: string; draft: SessionDraft }>>(() => {
     try { return JSON.parse(localStorage.getItem('rowing-session-templates') || '[]'); } catch { return []; }
@@ -151,7 +153,7 @@ export const SessionEditorForm: React.FC<Props> = ({ value, exercises, trainers,
   const datePart = value.session_date.slice(0, 10);
   const timePart = value.session_date.includes('T') ? value.session_date.slice(11, 16) : '06:00';
   const weekday = datePart ? new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(new Date(`${datePart}T12:00:00`)) : '';
-  const dateOutsideSchedule = Boolean((minDate && datePart < minDate) || (maxDate && datePart > maxDate));
+  const dateOutsideSchedule = !timingLocked && Boolean((minDate && datePart < minDate) || (maxDate && datePart > maxDate));
   const legacy = legacyPrescription(value);
   const prescriptions = value.exercises?.length ? value.exercises : legacy ? [legacy] : [];
   const fieldClass = 'mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-xs text-white outline-none focus:ring-2 focus:ring-amber-500';
@@ -175,12 +177,12 @@ export const SessionEditorForm: React.FC<Props> = ({ value, exercises, trainers,
 
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       <label className="text-xs font-semibold text-slate-300 md:col-span-2">Session title<input value={value.title} onChange={(event) => update('title', event.target.value)} placeholder="e.g. Technical water session" className={fieldClass} autoFocus /><span className="mt-1 block text-[10px] font-normal text-slate-500">Describe the workout only—the weekday comes from the date.</span></label>
-      <fieldset className="md:col-span-2"><legend className="flex items-center gap-2 text-xs font-semibold text-slate-300">When is this session?{weekday && <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">{weekday}</span>}</legend><div className="mt-1 grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <fieldset disabled={timingLocked} className="md:col-span-2 disabled:opacity-60"><legend className="flex items-center gap-2 text-xs font-semibold text-slate-300">When is this session?{weekday && <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">{weekday}</span>}</legend><div className="mt-1 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="rounded-xl border border-slate-700 bg-slate-950 p-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">Session date<div className="mt-1 flex items-center gap-2"><CalendarDays className="h-5 w-5 text-amber-400" /><input ref={dateInputRef} type="date" min={minDate} max={maxDate} value={datePart} onChange={(event) => update('session_date', `${event.target.value}T${timePart}`)} className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-white [color-scheme:dark]" /><button type="button" onClick={() => openPicker(dateInputRef.current)} className="rounded-lg bg-amber-500/15 px-2 py-2 text-amber-300">Choose</button></div></label>
         <label className="rounded-xl border border-slate-700 bg-slate-950 p-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">Start time<div className="mt-1 flex items-center gap-2"><Clock3 className="h-5 w-5 text-sky-400" /><input ref={timeInputRef} type="time" value={timePart} onChange={(event) => update('session_date', `${datePart}T${event.target.value}`)} className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-white [color-scheme:dark]" /><button type="button" onClick={() => openPicker(timeInputRef.current)} className="rounded-lg bg-sky-500/15 px-2 py-2 text-sky-300">Choose</button></div></label>
       </div>{dateOutsideSchedule && <p className="mt-2 rounded-lg bg-rose-500/10 px-3 py-2 text-[11px] font-semibold text-rose-300">Choose a date from {minDate} to {maxDate}.</p>}</fieldset>
       {allowRecurrence && <label className="text-xs font-semibold text-slate-300">Weekly recurrence<select value={value.repeat_weeks || 1} onChange={(event) => update('repeat_weeks', Number(event.target.value))} className={fieldClass}>{[1, 2, 4, 6, 8, 12].map((count) => <option key={count} value={count}>{count === 1 ? 'Does not repeat' : `Weekly · ${count} occurrences`}</option>)}</select></label>}
-      <label className="text-xs font-semibold text-slate-300">Duration (minutes)<input type="number" min={1} max={1440} value={value.duration_minutes} onChange={(event) => update('duration_minutes', Number(event.target.value))} className={fieldClass} /></label>
+      <label className="text-xs font-semibold text-slate-300">Duration (minutes)<input disabled={timingLocked} type="number" min={1} max={1440} value={value.duration_minutes} onChange={(event) => update('duration_minutes', Number(event.target.value))} className={fieldClass} /></label>
       <label className="text-xs font-semibold text-slate-300">Session type<select value={value.session_type} onChange={(event) => update('session_type', event.target.value)} className={fieldClass}><option value="indoor_erg">Indoor erg</option><option value="water_rowing">Water rowing</option><option value="strength_gym">Strength / gym</option><option value="recovery">Recovery</option><option value="cross_training">Cross training</option></select></label>
       <label className="text-xs font-semibold text-slate-300">Assigned trainer<select value={value.trainer_id || ''} onChange={(event) => update('trainer_id', event.target.value ? Number(event.target.value) : undefined)} className={fieldClass}><option value="">Use schedule trainers</option>{trainers.map((trainer) => <option key={trainer.id} value={trainer.id}>{trainer.full_name}</option>)}</select></label>
       <label className="text-xs font-semibold text-slate-300 md:col-span-2">Location<input value={value.location} onChange={(event) => update('location', event.target.value)} className={fieldClass} /></label>
