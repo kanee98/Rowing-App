@@ -69,10 +69,10 @@ This guide covers:
    SECRET_KEY=dev-secret-key-change-this-for-production-rowing-app-2026
    CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 
-   # Local SQL Server Connection (Windows Authentication):
-   DATABASE_URL=mssql+pyodbc://localhost/sports_management?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes&TrustServerCertificate=yes
+   # Local SQL Server Connection (Windows Authentication for SQLEXPRESS):
+   DATABASE_URL=mssql+pyodbc://localhost\SQLEXPRESS/sports_management?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes&TrustServerCertificate=yes
    ```
-   *(If your SQL Server uses an instance name like `SQLEXPRESS`, use `localhost\SQLEXPRESS` instead of `localhost`).*
+   *(If your SQL Server uses the default unnamed instance, use `localhost` instead of `localhost\SQLEXPRESS`).*
 
 5. Start the backend:
    ```powershell
