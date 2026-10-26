@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,7 @@ from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash
 from app.models.models import Club, ClubInvitation, ClubJoinRequest, Notification, User, UserRole
-from app.services.delivery import queue_email, app_link, email_configured
+from app.services.delivery import queue_email, app_link, email_configured, trigger_delivery
 from app.models.operations import EmailOutbox
 from app.schemas.schemas import (
     ClubInvitationAccept, ClubInvitationCreate, ClubInvitationCreated,
@@ -105,6 +105,7 @@ def approve_join_request(
     payload: JoinRequestReview,
     current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])),
     db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     request = db.query(ClubJoinRequest).filter(
         ClubJoinRequest.id == request_id,
@@ -128,6 +129,7 @@ def approve_join_request(
     queue_email(db, request.club_id, request.email, "Your club membership was approved", f"You can now sign in to {current_user.club.name} using the password you chose.\n{app_link()}")
     db.commit()
     db.refresh(user)
+    trigger_delivery(background_tasks)
     result = UserOut.model_validate(user)
     result.club_name = current_user.club.name if current_user.club else None
     return result
@@ -138,6 +140,7 @@ def reject_join_request(
     payload: JoinRequestReview,
     current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])),
     db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     request = db.query(ClubJoinRequest).filter(
         ClubJoinRequest.id == request_id,
@@ -153,6 +156,7 @@ def reject_join_request(
     queue_email(db, request.club_id, request.email, "Your club membership request was reviewed", f"Your request to join {current_user.club.name} was not approved. Contact the club for details.")
     db.commit()
     db.refresh(request)
+    trigger_delivery(background_tasks)
     return request
 
 @router.post("/invitations", response_model=ClubInvitationCreated)
@@ -160,6 +164,7 @@ def create_invitation(
     payload: ClubInvitationCreate,
     current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])),
     db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     if current_user.role == UserRole.COACH and payload.role != UserRole.ATHLETE:
         raise HTTPException(status_code=403, detail="Coaches may invite athletes only; administrators invite staff")
@@ -188,6 +193,7 @@ def create_invitation(
         f"You have been invited as {payload.role.value}. Create your own account using this single-use link:\n{app_link(invite=token)}\nThis invitation expires in {payload.expires_days} days.", dedupe_key=f'invitation:{invitation.id}:{_token_hash(token)[:16]}')
     db.commit()
     db.refresh(invitation)
+    trigger_delivery(background_tasks)
     return ClubInvitationCreated(
         **ClubInvitationOut.model_validate(invitation).model_dump(),
         token=token,
@@ -195,7 +201,12 @@ def create_invitation(
     )
 
 @router.post("/invitations/{invitation_id}/resend", response_model=ClubInvitationCreated)
-def resend_invitation(invitation_id: int, current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])), db: Session = Depends(get_db)):
+def resend_invitation(
+    invitation_id: int,
+    current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.COACH])),
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
+):
     invitation = db.query(ClubInvitation).filter(ClubInvitation.id == invitation_id, ClubInvitation.club_id == current_user.club_id).with_for_update().first()
     if not invitation or (current_user.role == UserRole.COACH and invitation.role != UserRole.ATHLETE):
         raise HTTPException(404, "Invitation not found")
@@ -205,7 +216,9 @@ def resend_invitation(invitation_id: int, current_user: User = Depends(require_r
     _cancel_invitation_emails(db, invitation.id)
     invitation.token_hash, invitation.expires_at = _token_hash(token), datetime.utcnow() + timedelta(days=7)
     queue_email(db, current_user.club_id, invitation.email, f"New invitation link for {current_user.club.name}", f"This replaces your previous invitation. Join as {invitation.role.value}:\n{app_link(invite=token)}\nThe link expires in seven days.", dedupe_key=f'invitation:{invitation.id}:{_token_hash(token)[:16]}')
-    db.commit(); db.refresh(invitation)
+    db.commit()
+    db.refresh(invitation)
+    trigger_delivery(background_tasks)
     return ClubInvitationCreated(**ClubInvitationOut.model_validate(invitation).model_dump(), token=token, email_queued=email_configured())
 
 @router.get("/invitations", response_model=List[ClubInvitationOut])

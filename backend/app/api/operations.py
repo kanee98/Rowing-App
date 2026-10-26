@@ -1,5 +1,5 @@
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
@@ -7,7 +7,7 @@ from app.models.models import User, UserRole, Equipment, TrainingSession, Schedu
 from app.models.operations import Attendance, Crew, Reservation, DamageReport, Outing, AuditEvent, EmailOutbox, utcnow
 from app.schemas.operations import RSVPUpdate, CheckinUpdate, LifecycleUpdate, CrewInput, ReservationInput, DamageInput, ResolutionInput, OutingInput
 from app.services.club_operations import session_for, roster, available_equipment, validate_booking, validate_crew, validate_participant_conflicts, reservation_out, audit, BOAT_SEATS
-from app.services.delivery import queue_email, email_configured, app_link
+from app.services.delivery import queue_email, email_configured, app_link, trigger_delivery, queue_reminders, deliver_pending
 from app.services.club_operations import validate_lifecycle, lock_club, reservation_seats
 from sqlalchemy import or_
 
@@ -78,7 +78,7 @@ def checkin(session_id: int, user_id: int, payload: CheckinUpdate, user: User = 
 
 
 @router.post("/sessions/{session_id}/lifecycle")
-def lifecycle(session_id: int, payload: LifecycleUpdate, user: User = Depends(managers), db: Session = Depends(get_db)):
+def lifecycle(session_id: int, payload: LifecycleUpdate, user: User = Depends(managers), db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
     lock_club(db, user)
     session = session_for(db, user, session_id, manage=True, lock=True)
     validate_lifecycle(session, payload.action, payload.session_date)
@@ -129,6 +129,7 @@ def lifecycle(session_id: int, payload: LifecycleUpdate, user: User = Depends(ma
         queue_email(db, user.club_id, member.email, f"Session update: {session.title}", message + f"\n{app_link()}#operations/{session.id}")
     audit(db, user, payload.action, "session", session.id, {"reason": payload.reason})
     db.commit()
+    trigger_delivery(background_tasks)
     return session_out(session)
 
 
@@ -317,10 +318,21 @@ def communications(user: User = Depends(require_roles([UserRole.ADMIN])), db: Se
 
 
 @router.post("/communications/{message_id}/retry")
-def retry_message(message_id: int, user: User = Depends(require_roles([UserRole.ADMIN])), db: Session = Depends(get_db)):
+def retry_message(message_id: int, user: User = Depends(require_roles([UserRole.ADMIN])), db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
     row = db.query(EmailOutbox).filter(EmailOutbox.id == message_id, EmailOutbox.club_id == user.club_id).with_for_update().first()
     if not row or row.status != "failed":
         raise HTTPException(409, "Only failed messages can be retried")
     row.status, row.attempts, row.next_attempt_at = "pending", 0, utcnow()
     db.commit()
+    trigger_delivery(background_tasks)
     return {"message": "Email queued for retry"}
+
+
+@router.api_route("/delivery/flush", methods=["GET", "POST"])
+def flush_delivery(db: Session = Depends(get_db)):
+    """Trigger pending reminders and flush the email outbox. Usable by cron jobs or ops."""
+    if not email_configured():
+        return {"status": "skipped", "reason": "email_not_configured"}
+    queue_reminders()
+    deliver_pending()
+    return {"status": "ok"}

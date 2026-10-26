@@ -78,6 +78,19 @@ def deliver_pending():
         db.commit()
 
 
+def trigger_delivery(background_tasks=None):
+    """Immediately deliver pending emails using FastAPI background tasks (on serverless) or synchronous fallback."""
+    if not email_configured():
+        return
+    if background_tasks is not None:
+        background_tasks.add_task(deliver_pending)
+    else:
+        try:
+            deliver_pending()
+        except Exception:
+            logger.exception("Synchronous email delivery failed")
+
+
 def queue_reminders():
     if not email_configured():
         return

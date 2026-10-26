@@ -88,6 +88,15 @@ def ready():
     except Exception:
         raise HTTPException(status_code=503, detail="Database is not ready")
 
+@app.api_route(f"{settings.API_V1_STR}/cron/delivery", methods=["GET", "POST"])
+def cron_delivery():
+    from app.services.delivery import email_configured, queue_reminders, deliver_pending
+    if not email_configured():
+        return {"status": "skipped", "reason": "email_not_configured"}
+    queue_reminders()
+    deliver_pending()
+    return {"status": "ok"}
+
 @app.get("/")
 def root():
     return {

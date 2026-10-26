@@ -1,7 +1,7 @@
 import hashlib
 import secrets
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -11,7 +11,7 @@ from app.api.deps import get_current_user
 from app.models.models import User, BoatSidePreference
 from app.models.operations import AccountAction, utcnow
 from app.schemas.schemas import Token, UserOut
-from app.services.delivery import queue_email, email_configured, app_link
+from app.services.delivery import queue_email, email_configured, app_link, trigger_delivery
 from app.services.club_operations import audit, lock_club
 
 router = APIRouter(prefix="/account", tags=["account settings"])
@@ -99,7 +99,7 @@ def password(payload: PasswordChange, user: User = Depends(get_current_user), db
 
 
 @router.post("/email-change")
-def email_change(payload: EmailChange, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def email_change(payload: EmailChange, user: User = Depends(get_current_user), db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
     require_mail()
     user = locked_user(db, user)
     if not verify_password(payload.current_password, user.hashed_password):
@@ -110,11 +110,12 @@ def email_change(payload: EmailChange, user: User = Depends(get_current_user), d
     raw = action_token(db, user, "email_change", email)
     queue_email(db, user.club_id, email, "Confirm your new club account email", f"Confirm your new email within one hour:\n{app_link(account_action='email_change', token=raw)}")
     db.commit()
+    trigger_delivery(background_tasks)
     return {"message": "A confirmation link has been queued to your new email. Your current email remains active until confirmation."}
 
 
 @router.post("/forgot-password")
-def forgot_password(payload: ResetRequest, db: Session = Depends(get_db)):
+def forgot_password(payload: ResetRequest, db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
     require_mail()
     user = db.query(User).filter(func.lower(User.email) == str(payload.email).lower(), User.is_active == True).first()
     if user:
@@ -128,11 +129,12 @@ def forgot_password(payload: ResetRequest, db: Session = Depends(get_db)):
             raw = action_token(db, user, "password_reset")
             queue_email(db, user.club_id, user.email, "Reset your club account password", f"Reset your password within one hour:\n{app_link(account_action='password_reset', token=raw)}\nIgnore this message if you did not request it.")
             db.commit()
+            trigger_delivery(background_tasks)
     return {"message": "If an active account matches that email, a password reset link has been queued."}
 
 
 @router.post("/confirm")
-def confirm(payload: ActionInput, db: Session = Depends(get_db)):
+def confirm(payload: ActionInput, db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
     digest = hashlib.sha256(payload.token.encode()).hexdigest()
     action = db.query(AccountAction).filter(AccountAction.token_hash == digest).first()
     if not action or action.consumed_at or action.expires_at <= utcnow():
@@ -160,4 +162,5 @@ def confirm(payload: ActionInput, db: Session = Depends(get_db)):
     db.query(AccountAction).filter(AccountAction.user_id == user.id, AccountAction.consumed_at.is_(None)).update({"consumed_at": utcnow()}, synchronize_session=False)
     audit(db, user, action.purpose, "user", user.id)
     db.commit()
+    trigger_delivery(background_tasks)
     return {"message": "Account updated. Sign in with your current email and password."}

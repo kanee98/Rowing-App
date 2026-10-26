@@ -130,11 +130,11 @@ export const MembershipManager: React.FC<Props> = ({ userRole, onChanged, invita
           </label>
           <button type="submit" disabled={busy} className="flex min-h-[42px] items-center justify-center gap-2 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-50"><UserPlus className="h-4 w-4" />{busy ? 'Please wait…' : 'Create ' + roleLabel.toLowerCase() + ' invitation'}</button>
         </div>
-        <p className="text-xs text-slate-400">Invitations are single-use. Only administrators can invite coaches, trainers and other administrators. No email is sent automatically.</p>
+        <p className="text-xs text-slate-400">Invitations are single-use. When email delivery is configured, invitations are emailed automatically. You can also copy and share the link manually.</p>
       </form>
       {createdInvite && <div role="status" className="mt-5 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
         <h4 className="break-words font-bold text-emerald-200">Invitation ready for {createdInvite.email}</h4>
-        <p className="mt-1 text-xs text-emerald-100/80">{createdInvite.emailQueued ? 'Email queued. Delivery status is available to administrators in Operations → Email delivery.' : 'Email is not configured. Copy and send this link manually.'} You can also copy this single-use link. Save it before leaving this page or use Renew link to generate a replacement.</p>
+        <p className="mt-1 text-xs text-emerald-100/80">{createdInvite.emailQueued ? 'Invitation email has been sent/queued. Delivery status is available to administrators in Operations → Email delivery.' : 'Email delivery is not configured on this server. Copy and send this link manually.'} You can also copy this single-use link. Save it before leaving this page or use Renew link to generate a replacement.</p>
         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
           <input aria-label="Invitation link" readOnly value={createdInvite.link} onFocus={(event) => event.target.select()} className="min-w-0 flex-1 rounded-xl border border-emerald-500/20 bg-slate-950/50 px-3 py-2 text-xs text-emerald-100" />
           <button type="button" onClick={async () => {
